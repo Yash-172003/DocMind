@@ -1,0 +1,50 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== Virtual Environment =====
+.venv/
+venv/
+env/
+
+# ===== Environment Variables / Secrets =====
+# NEVER commit API keys, database passwords, or any credentials
+.env
+.env.*
+!.env.example
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== OS =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ===== Docker =====
+# Don't ignore docker-compose.yml or Dockerfile — those ARE your infrastructure code
+# But ignore runtime data
+docker-data/
+
+# ===== Testing =====
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Misc =====
+*.tmp
+*.bak
