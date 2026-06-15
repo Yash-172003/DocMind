@@ -30,7 +30,10 @@ Built end-to-end over 14 months as a deep engineering learning project.
 
 **Phase 0 — Engineering Foundations** (Months 1-2)
 
-Week 1-2: Production-grade Python — async, typed, tested, logged.
+- [x] **Week 1:** Production-grade Python — async, typed, tested, logged.
+  - *Completed 2026-06-15*: Scaffolding with `uv`, FastAPI, strict `mypy`, `ruff`, `pytest-asyncio`, and `structlog`.
+- [ ] **Week 2:** Local Infrastructure
+  - Docker Compose for PostgreSQL (with pgvector) and Redis.
 
 ## Author
 
