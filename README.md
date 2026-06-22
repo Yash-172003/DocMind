@@ -32,8 +32,8 @@ Built end-to-end over 14 months as a deep engineering learning project.
 
 - [x] **Week 1:** Production-grade Python — async, typed, tested, logged.
   - *Completed 2026-06-15*: Scaffolding with `uv`, FastAPI, strict `mypy`, `ruff`, `pytest-asyncio`, and `structlog`.
-- [ ] **Week 2:** Local Infrastructure
-  - Docker Compose for PostgreSQL (with pgvector) and Redis.
+- [x] **Week 2:** Local Infrastructure
+  - *Completed 2026-06-22*: Docker Compose with PostgreSQL (pgvector) and Redis, persistent volumes, health checks, and `.env` secret management.
 
 ## Author
 
