@@ -57,16 +57,28 @@ In the `test_documents.py` file, we simulated a client uploading a fake file, ch
 
 Now we also encountered a asyncio error too. What happened is:
 
-`event loop      (all async operations)`
-`      ↑` 
-`connected (created by)`
-`      ↑`
-`async engine → "pool of connections" to PostgreSQL -  (pre-opened connections)`
+```text
+event loop      (all async operations)
+      ↑
+connected (created by)
+      ↑
+async engine → "pool of connections" to PostgreSQL
+      └─ (pre-opened connections)
 
-But, `pytest-asyncio` → new event loop for each test
+But, pytest-asyncio → new event loop for each test
 
 So:
-`async engine` → created by event loop → shared across tests → but event loop was thrown away after test 1 → test 2 inherited an engine pointing to a dead loop
+
+async engine
+      ↓
+created by event loop
+      ↓
+shared across tests
+      ↓
+event loop from test 1 was destroyed
+      ↓
+test 2 inherited an engine pointing to a dead loop
+```
 
 So, for the fix: setting `asyncio_default_test_loop_scope = "session"` gives all tests one shared loop so the pool stays alive and valid throughout.
 
