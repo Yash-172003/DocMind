@@ -34,7 +34,7 @@ Built end-to-end over 14 months as a deep engineering learning project.
   - *Completed 2026-06-15*: Scaffolding with `uv`, FastAPI, strict `mypy`, `ruff`, `pytest-asyncio`, and `structlog`.
 - [x] **Week 2:** Local Infrastructure
   - *Completed 2026-06-22*: Docker Compose with PostgreSQL (pgvector) and Redis, persistent volumes, health checks, and `.env` secret management.
-  - [x] **Week 3-4:** FastAPI + API Design
+- [x] **Week 3-4:** FastAPI + API Design
   - *Completed 2026-07-10*: Built a production-grade async FastAPI architecture with SQLAlchemy, Alembic, Dependency Injection, API key authentication, Pydantic v2 schemas, background task processing, lifespan events, exception handling, and integration tests for document workflows.
 
 ## Author
