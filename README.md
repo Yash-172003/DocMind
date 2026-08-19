@@ -36,6 +36,8 @@ Built end-to-end over 14 months as a deep engineering learning project.
   - *Completed 2026-06-22*: Docker Compose with PostgreSQL (pgvector) and Redis, persistent volumes, health checks, and `.env` secret management.
 - [x] **Week 3-4:** FastAPI + API Design
   - *Completed 2026-07-10*: Built a production-grade async FastAPI architecture with SQLAlchemy, Alembic, Dependency Injection, API key authentication, Pydantic v2 schemas, background task processing, lifespan events, exception handling, and integration tests for document workflows.
+- [x] **Week 5-6:** PostgreSQL Mastery
+  - *Completed 2026-08-19*: Added a `chunks` table with pgvector embeddings, JSONB metadata on documents, four purpose-built indexes (status B-tree, metadata GIN, composite chunk lookup, HNSW vector search), and connection pooling. Verified index usage with an EXPLAIN ANALYZE script against 1000 seeded chunks.
 
 ## Author
 
