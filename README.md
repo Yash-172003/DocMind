@@ -26,6 +26,30 @@ Built end-to-end over 14 months as a deep engineering learning project.
 | LLM | Gemini API (free tier) |
 | Observability | Langfuse (self-hosted) |
 
+## Getting Started
+
+The entire stack — the FastAPI app, PostgreSQL (pgvector), Redis, and a self-hosted Langfuse observability stack — runs identically on any machine with one command.
+
+1. Copy `.env.example` to `.env` and fill in real values (generate `LANGFUSE_ENCRYPTION_KEY` with `openssl rand -hex 32`, and `LANGFUSE_SALT`/`LANGFUSE_NEXTAUTH_SECRET` with `openssl rand -base64 32`).
+2. Run:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. Once containers report healthy:
+
+   | Service | URL | Notes |
+   |---|---|---|
+   | DocMind API | http://localhost:8000 | `/health` for a liveness check, `/docs` for the interactive API docs |
+   | Langfuse | http://localhost:3000 | Log in with `LANGFUSE_INIT_USER_EMAIL` / `LANGFUSE_INIT_USER_PASSWORD` from `.env` — auto-provisioned on first boot |
+   | PostgreSQL | localhost:5432 | App's own DB (documents, chunks) |
+   | Redis | localhost:6379 | Reserved for semantic caching (Phase 1) |
+
+Editing anything under `src/` is picked up live — the `app` container runs `uvicorn --reload` with `./src` mounted from the host, no rebuild needed. A rebuild is only required after changing dependencies (`pyproject.toml`/`uv.lock`) or the `Dockerfile` itself.
+
+To stop everything: `docker compose down` (add `-v` to also wipe all volumes/data).
+
 ## Current Phase
 
 **Phase 0 — Engineering Foundations** (Months 1-2)
@@ -38,6 +62,10 @@ Built end-to-end over 14 months as a deep engineering learning project.
   - *Completed 2026-07-10*: Built a production-grade async FastAPI architecture with SQLAlchemy, Alembic, Dependency Injection, API key authentication, Pydantic v2 schemas, background task processing, lifespan events, exception handling, and integration tests for document workflows.
 - [x] **Week 5-6:** PostgreSQL Mastery
   - *Completed 2026-08-19*: Added a `chunks` table with pgvector embeddings, JSONB metadata on documents, four purpose-built indexes (status B-tree, metadata GIN, composite chunk lookup, HNSW vector search), and connection pooling. Verified index usage with an EXPLAIN ANALYZE script against 1000 seeded chunks.
+- [x] **Week 7-8:** Docker + Local Infrastructure
+  - *Completed 2026-08-19*: Containerized the FastAPI app with a multi-stage Dockerfile (dev/production targets), added it to `docker-compose.yml`, and added a full self-hosted Langfuse observability stack (web, worker, its own Postgres/Redis/ClickHouse/MinIO). One command now starts the entire local environment.
+
+**Phase 0 Complete** — clean async Python backend, containerized end-to-end, with PostgreSQL, Redis, and Langfuse all running locally behind one `docker compose up`.
 
 ## Author
 

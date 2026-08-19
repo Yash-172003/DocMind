@@ -111,3 +111,27 @@ We also created a standalone script called `explain_queries.py`. This was mainly
 Finally, we updated `pyproject.toml`. We added `numpy` and `pgvector` because they are required for vector-related operations.
 
 ---
+
+## 2026-08-19 — Phase 0, Week 7-8
+
+**What I built:** Containerized the FastAPI app itself with a multi-stage Dockerfile, added it to docker-compose, and added a full self-hosted Langfuse observability stack.
+
+**What I learned:**
+
+The biggest thing I learned was how a multi-stage Docker build works. We created a common base stage which acts as the foundation for both development and production environments. One important optimization here is that Docker caches layers. As long as dependencies remain unchanged, it simply reuses the cached layer.
+
+We also fixed the import issue inside Docker by setting `PYTHONPATH=/app/src`. Since our project is not actually installed as a Python package inside the container, Python needs to be explicitly told where the `docmind` package exists.
+
+We then created two separate environments. The development stage installs all development tools, allowing code changes on our machine to instantly reflect inside the container. The production stage only installs what is needed to run the application and excludes development dependencies.
+
+We also created a `.dockerignore` file to prevent unnecessary files and sensitive information from being sent into the Docker build process.
+
+In `docker-compose.yml`, we added a new `app` service which builds the development version of the Docker image. One important thing I learned is that containers communicate using service names rather than `localhost`. This is why the application uses `db:5432` to connect to PostgreSQL when running inside Docker. We also configured health checks so the application waits until PostgreSQL and Redis are actually ready before starting.
+
+Another major addition was the complete Langfuse stack, and it consists of multiple services working together. It has its own web application, worker service, PostgreSQL database, Redis queue, ClickHouse analytics database, and MinIO object storage. Each component has a specific responsibility, and keeping them separate avoids conflicts with our own application infrastructure.
+
+We also configured persistent volumes for all major services. From what I understood, these volumes act like virtual disks that survive container restarts, ensuring that databases and application data are not lost whenever containers are recreated.
+
+Finally, we encountered an issue with ClickHouse. The application kept crashing because Langfuse automatically assumed a clustered ClickHouse setup when a specific configuration variable was missing. Cluster mode requires Zookeeper, which we were not running. The fix was to explicitly disable cluster mode, which allowed ClickHouse to run as a standalone instance. This taught me that some configuration flags may look optional but can completely change how a system behaves internally.
+
+---
