@@ -10,6 +10,7 @@ Instead, we define explicit response schemas. This gives us:
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -25,6 +26,8 @@ class DocumentResponse(BaseModel):
     status: DocumentStatus
     content: str | None = None
     error_message: str | None = None
+    metadata_: dict[str, Any] | None = None
+    chunk_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -48,3 +51,17 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     status: DocumentStatus
     message: str
+
+
+class ChunkResponse(BaseModel):
+    """Response schema for a single chunk of a document."""
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    chunk_index: int
+    text: str
+    token_count: int
+    page_numbers: list[int] | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

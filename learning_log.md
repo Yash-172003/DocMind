@@ -83,3 +83,31 @@ test 2 inherited an engine pointing to a dead loop
 So, for the fix: setting `asyncio_default_test_loop_scope = "session"` gives all tests one shared loop so the pool stays alive and valid throughout.
 
 ---
+
+## 2026-08-19 — Phase 0, Week 5-6
+
+**What I built:** Expanded the database schema with a `chunks` table, JSONB metadata, pgvector embeddings, four custom indexes, connection pooling, and verified everything with EXPLAIN ANALYZE.
+
+**What I learned:**
+
+From what I have understood, earlier our `Document` table was only storing information about the document itself, but now it can support chunking, embeddings, and metadata filtering.
+
+In `models.py`, we added two new fields to the `Document` model. The first one is `metadata_`. Some files may have page counts, authors, languages, file sizes, and other files may have completely different information. Instead of creating a new database column for every possible property, JSONB lets us store all of that in a schema-less format. We also added `chunk_count`, storing the value directly in the document row so we can read it instantly without doing extra joins or running a `COUNT(*)` query every time.
+
+We also created a completely new `Chunk` table. From what I understood, this is where the real content of our documents lives. Every chunk belongs to one document through the `document_id` foreign key. We also enabled `ondelete="CASCADE"`, which means if a document gets deleted, PostgreSQL automatically deletes all its chunks too, without us having to manually clean them up. The `chunk_index` tells us the order of the chunk inside the document. The `text` column stores the extracted content itself. We also added `token_count` and `page_numbers` to the chunk model.
+
+Now, we also created a relationship called `document.chunks`. This is a one-to-many relationship because one document can have many chunks. We configured it with `cascade="all, delete-orphan"`, and from what I understood, while PostgreSQL handles deletes at the database level through the foreign key, SQLAlchemy can also automatically manage related chunk objects when operations happen through the ORM. Basically, both the database and the Python layer are working together to keep the data clean and synchronized.
+
+Another thing we did was create multiple indexes. Before this, I mostly thought indexes were just used to make queries faster, but here I learned that different index types solve completely different query patterns. The status index helps queries like finding all completed documents. The composite index on `document_id` and `chunk_index` is interesting because it can satisfy both filtering and sorting from a single index. Finally, the HNSW index is specifically designed for vector similarity search.
+
+In `base.py`, we improved our database connection pooling, and what I learned is that creating a new database connection every time an API request arrives is expensive. So SQLAlchemy maintains a pool of reusable connections. We set `pool_size=5`, which means five connections stay ready at all times. `max_overflow=10` allows temporary extra connections during heavy traffic, bringing the maximum to fifteen. `pool_timeout=30` tells requests to wait up to thirty seconds before failing if every connection is busy.
+
+In `document.py`, we updated our response schemas. The `DocumentResponse` model now exposes the new `metadata_` and `chunk_count` fields. We also created a new `ChunkResponse` model.
+
+We also added a new endpoint called `GET /documents/{id}/chunks`.
+
+We also created a standalone script called `explain_queries.py`. This was mainly used to verify that PostgreSQL was actually using the indexes we designed. The script generated 100 documents and 1000 chunks with random 1024-dimensional vectors and then ran `EXPLAIN ANALYZE` on different query patterns. From what I understood, this is an important validation step because creating an index does not automatically mean PostgreSQL will use it.
+
+Finally, we updated `pyproject.toml`. We added `numpy` and `pgvector` because they are required for vector-related operations.
+
+---

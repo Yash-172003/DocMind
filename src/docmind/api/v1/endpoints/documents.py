@@ -25,11 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from docmind.api.deps import get_db, verify_api_key
 from docmind.api.v1.schemas.document import (
+    ChunkResponse,
     DocumentResponse,
     DocumentStatusResponse,
     DocumentUploadResponse,
 )
-from docmind.db.models import Document, DocumentStatus
+from docmind.db.models import Chunk, Document, DocumentStatus
 
 logger = structlog.get_logger()
 
@@ -179,3 +180,27 @@ async def delete_document(
     await db.delete(document)
     await db.commit()
     logger.info("document_deleted", document_id=str(document_id))
+
+
+@router.get("/{document_id}/chunks", response_model=list[ChunkResponse])
+async def get_document_chunks(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[ChunkResponse]:
+    """Get all chunks for a document, ordered by chunk index."""
+    # First verify the document exists
+    doc_result = await db.execute(select(Document).where(Document.id == document_id))
+    if doc_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+
+    # Fetch chunks ordered by position
+    result = await db.execute(
+        select(Chunk)
+        .where(Chunk.document_id == document_id)
+        .order_by(Chunk.chunk_index)
+    )
+    chunks = result.scalars().all()
+    return [ChunkResponse.model_validate(c) for c in chunks]
