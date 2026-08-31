@@ -5,6 +5,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from docmind.core.config import settings
+from docmind.db.base import async_session_factory
+from docmind.db.models import Document, DocumentStatus
 from docmind.main import app
 
 
@@ -58,6 +60,42 @@ async def test_document_lifecycle(client: AsyncClient) -> None:
     # 5. Verify Deleted
     status_res_after = await client.get(f"/api/v1/documents/{doc_id}/status")
     assert status_res_after.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unknown_document_returns_404_on_every_endpoint(
+    client: AsyncClient,
+) -> None:
+    fake_id = "00000000-0000-0000-0000-000000000000"
+
+    content_res = await client.get(f"/api/v1/documents/{fake_id}/content")
+    delete_res = await client.delete(f"/api/v1/documents/{fake_id}")
+    chunks_res = await client.get(f"/api/v1/documents/{fake_id}/chunks")
+
+    assert content_res.status_code == 404
+    assert delete_res.status_code == 404
+    assert chunks_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_is_safe_when_no_file_was_ever_saved(client: AsyncClient) -> None:
+    # A Document row can exist without an upload directory on disk (e.g.
+    # this exact scenario in test_error_handling.py). Delete must not
+    # crash just because there's nothing to clean up on disk.
+    async with async_session_factory() as db:
+        document = Document(
+            filename="no_file_on_disk.txt",
+            content_type="text/plain",
+            status=DocumentStatus.PENDING,
+        )
+        db.add(document)
+        await db.commit()
+        await db.refresh(document)
+        document_id = document.id
+
+    response = await client.delete(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 204
 
 
 @pytest.mark.asyncio

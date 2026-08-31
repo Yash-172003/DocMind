@@ -53,3 +53,46 @@ def test_extract_docx_reading_order_preserved() -> None:
 def test_extract_docx_corrupt_bytes_raises() -> None:
     with pytest.raises(CorruptDocumentError):
         extract_docx(b"not a real docx file")
+
+
+def test_extract_docx_detects_headings() -> None:
+    doc = DocxDocument()
+    doc.add_paragraph("Executive Summary", style="Title")
+    doc.add_paragraph("This report covers quarterly results.")
+    doc.add_paragraph("Findings", style="Heading 1")
+    doc.add_paragraph("Revenue grew steadily this quarter.")
+    doc.add_paragraph("Details", style="Heading 2")
+    doc.add_paragraph("Broken down by region below.")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    result = extract_docx(buffer.getvalue())
+
+    assert [(h.text, h.level) for h in result.headings] == [
+        ("Executive Summary", 0),
+        ("Findings", 1),
+        ("Details", 2),
+    ]
+    # Each heading's offset should point at exactly where its text starts.
+    for heading in result.headings:
+        assert result.text[heading.char_offset :].startswith(heading.text)
+
+
+def test_extract_docx_no_headings_when_no_heading_styles_used() -> None:
+    data = build_docx(["Just a normal paragraph.", "Another normal one."])
+
+    result = extract_docx(data)
+
+    assert result.headings == []
+
+
+def test_extract_docx_reads_document_title_property() -> None:
+    doc = DocxDocument()
+    doc.core_properties.title = "Quarterly Vendor Report"
+    doc.add_paragraph("Body text.")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    result = extract_docx(buffer.getvalue())
+
+    assert result.metadata["title"] == "Quarterly Vendor Report"

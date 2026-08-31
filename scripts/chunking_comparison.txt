@@ -1,0 +1,45 @@
+
+Document: Docs\DocMind.txt (34052 bytes, 1 page(s))
+Target chunk size: 512 tokens (~2048 chars)
+
+======================================================================
+Strategy: 1 — Fixed-size (naive baseline)
+======================================================================
+  chunks produced:        19
+  avg tokens/chunk:       495.0
+  min/max tokens/chunk:   189 / 512
+  chunks starting lowercase (likely mid-sentence): 14
+  chunks with no terminal punctuation (likely cut off): 19
+
+  First chunk preview:
+    '**KANWAR YASHWENDER SINGH**\r\n\r\n**MASTER ROADMAP**\r\n\r\n**BECOMING THE ONE**\r\n\r\n_Enterprise AI Systems Engineer_\r\n\r\n14-Month Plan | 1 System | 5 Phases |'
+  Last chunk preview:
+    'th real accuracy numbers (90-95%).\r\n- Multi-agent system already built (spam filter, 98-99% accuracy).\r\n- Azure AI-102 cert: enterprise credibility. M'
+
+======================================================================
+Strategy: 2 — Semantic (sentence + TF-similarity grouping)
+======================================================================
+  chunks produced:        41
+  avg tokens/chunk:       201.9
+  min/max tokens/chunk:   34 / 498
+  chunks starting lowercase (likely mid-sentence): 0
+  chunks with no terminal punctuation (likely cut off): 1
+
+  First chunk preview:
+    '**KANWAR YASHWENDER SINGH**\r\n\r\n**MASTER ROADMAP**\r\n\r\n**BECOMING THE ONE**\r\n\r\n_Enterprise AI Systems Engineer_\r\n\r\n14-Month Plan | 1 System | 5 Phases |'
+  Last chunk preview:
+    'Shaping technical direction, not implementing features. **_The roadmap is the project. The project is the roadmap._**\r\n\r\n**Build DocMind.**'
+
+======================================================================
+Strategy: 3 — Structural (paragraph/heading boundaries)
+======================================================================
+  chunks produced:        17
+  avg tokens/chunk:       489.9
+  min/max tokens/chunk:   390 / 984
+  chunks starting lowercase (likely mid-sentence): 0
+  chunks with no terminal punctuation (likely cut off): 15
+
+  First chunk preview:
+    '**KANWAR YASHWENDER SINGH**\n\n**MASTER ROADMAP**\n\n**BECOMING THE ONE**\n\n_Enterprise AI Systems Engineer_\n\n14-Month Plan | 1 System | 5 Phases | Built E'
+  Last chunk preview:
+    '- **Systems thinking - designing architectures others depend on**\n- **Reliability and evaluation engineering - knowing when your AI is wrong**\n- **Ent'

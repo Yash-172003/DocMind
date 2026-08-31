@@ -15,7 +15,29 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from docmind.extraction.exceptions import CorruptDocumentError
-from docmind.extraction.models import ExtractedPage, ExtractedTable, ExtractionResult
+from docmind.extraction.models import (
+    ExtractedPage,
+    ExtractedTable,
+    ExtractionResult,
+    Heading,
+)
+
+
+def _heading_level(style_name: str) -> int | None:
+    """Map a paragraph style name to a heading level, or None if it isn't one.
+
+    Word's built-in styles are named "Heading 1".."Heading 9" and "Title"
+    (treated as level 0, above "Heading 1"). Custom/renamed styles won't
+    match — that's a real limitation of style-based heading detection,
+    not something we try to guess around.
+    """
+    if style_name == "Title":
+        return 0
+    if style_name.startswith("Heading "):
+        level_str = style_name.removeprefix("Heading ").strip()
+        if level_str.isdigit():
+            return int(level_str)
+    return None
 
 
 def extract_docx(data: bytes) -> ExtractionResult:
@@ -32,6 +54,8 @@ def extract_docx(data: bytes) -> ExtractionResult:
 
     text_parts: list[str] = []
     tables: list[ExtractedTable] = []
+    headings: list[Heading] = []
+    offset = 0
 
     # Walk the document body in reading order so tables land where they
     # actually appear instead of being collected separately at the end.
@@ -39,14 +63,22 @@ def extract_docx(data: bytes) -> ExtractionResult:
         if child.tag.endswith("}p"):
             paragraph = Paragraph(child, doc)
             if paragraph.text.strip():
+                level = _heading_level(paragraph.style.name if paragraph.style else "")
+                if level is not None:
+                    headings.append(
+                        Heading(
+                            text=paragraph.text, level=level, char_offset=offset
+                        )
+                    )
                 text_parts.append(paragraph.text)
+                offset += len(paragraph.text) + 2  # +2 for the "\n\n" joiner
         elif child.tag.endswith("}tbl"):
             table = Table(child, doc)
             rows = [[cell.text for cell in row.cells] for row in table.rows]
             tables.append(ExtractedTable(page_number=None, rows=rows))
-            text_parts.append(
-                "\n".join(" | ".join(cell for cell in row) for row in rows)
-            )
+            table_text = "\n".join(" | ".join(cell for cell in row) for row in rows)
+            text_parts.append(table_text)
+            offset += len(table_text) + 2
 
     full_text = "\n\n".join(text_parts)
 
@@ -66,5 +98,6 @@ def extract_docx(data: bytes) -> ExtractionResult:
         text=full_text,
         pages=[ExtractedPage(page_number=1, text=full_text)],
         tables=tables,
+        headings=headings,
         metadata=metadata,
     )

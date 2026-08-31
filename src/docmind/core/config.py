@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from docmind.chunking.strategy import ChunkingStrategy
+
 
 class Settings(BaseSettings):
     project_name: str = "DocMind"
@@ -17,6 +19,11 @@ class Settings(BaseSettings):
     # Storage — where uploaded document bytes are saved on disk so the
     # background processing task can read them after the request ends.
     upload_dir: str = "uploads"
+
+    # Chunking — "structural" is the production default (real document
+    # boundaries when available); "fixed_size" and "semantic" exist for
+    # comparison, see scripts/compare_chunking.py.
+    chunking_strategy: ChunkingStrategy = ChunkingStrategy.STRUCTURAL
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

@@ -71,6 +71,8 @@ To stop everything: `docker compose down` (add `-v` to also wipe all volumes/dat
 
 - [x] **Week 9-10:** Document Formats
   - *Completed 2026-08-31*: Built a real extraction pipeline for PDF (`pdfplumber` + `pymupdf` fallback), Word (`python-docx`), and Excel (`openpyxl`), unified behind one `ExtractionResult` shape. Added real file storage so uploads survive to the background processing step. Tested against 5 real invoices, found and fixed a text-scrambling bug (overlapping PDF text blocks) and a bug where extracted tables were computed but never persisted.
+- [x] **Week 11-12:** Chunking Strategy
+  - *Completed 2026-08-31*: Implemented and compared fixed-size, semantic (TF-cosine similarity), and structural (heading/paragraph-aware) chunking, wired into the pipeline so real `Chunk` rows are now persisted per document. A comparison script against a real 34KB document exposed a CRLF line-ending bug in structural chunking, fixed and regression-tested. Also audited test coverage (84% → 99%), fixing a `coverage.py`/SQLAlchemy-greenlet measurement bug and closing real testing gaps, including one that revealed unreachable dead code.
 
 ## Author
 

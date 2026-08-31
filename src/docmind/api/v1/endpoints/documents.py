@@ -29,6 +29,8 @@ from docmind.api.v1.schemas.document import (
     DocumentStatusResponse,
     DocumentUploadResponse,
 )
+from docmind.chunking.strategy import chunk_document
+from docmind.core.config import settings
 from docmind.core.storage import delete_upload, read_upload, save_upload
 from docmind.db.models import Chunk, Document, DocumentStatus
 from docmind.extraction.exceptions import ExtractionError
@@ -75,12 +77,27 @@ async def process_document(document_id: uuid.UUID, db: AsyncSession) -> None:
             # agent in Phase 2) need real rows, not reflowed prose.
             metadata["tables"] = [t.model_dump() for t in extraction.tables]
         document.metadata_ = metadata
+
+        chunks = chunk_document(extraction, strategy=settings.chunking_strategy)
+        for index, chunk in enumerate(chunks):
+            db.add(
+                Chunk(
+                    document_id=document.id,
+                    chunk_index=index,
+                    text=chunk.text,
+                    token_count=chunk.token_count,
+                    page_numbers=chunk.page_numbers or None,
+                )
+            )
+        document.chunk_count = len(chunks)
+
         document.status = DocumentStatus.DONE
         await db.commit()
         logger.info(
             "document_processing_complete",
             document_id=str(document_id),
             warnings=extraction.warnings,
+            chunk_count=len(chunks),
         )
 
     except ExtractionError as e:

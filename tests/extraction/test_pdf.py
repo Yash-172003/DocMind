@@ -78,3 +78,37 @@ def test_extract_pdf_normal_layout_never_triggers_fallback() -> None:
 
     assert "Post Office" in result.text
     assert result.warnings == []
+
+
+def test_extract_pdf_detects_real_table() -> None:
+    doc = pymupdf.open()
+    page = doc.new_page()
+    x0, y0, x1, y1 = 50, 50, 250, 100
+    page.draw_rect(pymupdf.Rect(x0, y0, x1, y1))
+    page.draw_line((x0, (y0 + y1) / 2), (x1, (y0 + y1) / 2))
+    page.draw_line(((x0 + x1) / 2, y0), ((x0 + x1) / 2, y1))
+    page.insert_text((60, 70), "Item")
+    page.insert_text((160, 70), "Qty")
+    page.insert_text((60, 95), "Widget")
+    page.insert_text((160, 95), "3")
+    data: bytes = doc.tobytes()
+    doc.close()
+
+    result = extract_pdf(data)
+
+    assert len(result.tables) == 1
+    assert result.tables[0].page_number == 1
+    assert result.tables[0].rows == [["Item", "Qty"], ["Widget", "3"]]
+
+
+def test_extract_pdf_reads_document_metadata() -> None:
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.set_metadata({"title": "Q1 Invoice Batch", "author": "Yash"})
+    data: bytes = doc.tobytes()
+    doc.close()
+
+    result = extract_pdf(data)
+
+    assert result.metadata["title"] == "Q1 Invoice Batch"
+    assert result.metadata["author"] == "Yash"

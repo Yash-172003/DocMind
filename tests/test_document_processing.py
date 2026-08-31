@@ -5,6 +5,7 @@ the endpoints respond.
 
 from collections.abc import AsyncGenerator
 
+import pymupdf
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -38,6 +39,31 @@ async def test_pdf_upload_is_extracted(client: AsyncClient) -> None:
     assert body["status"] == "done"
     assert "Invoice total: 1500" in body["content"]
     assert body["metadata_"]["page_count"] == 1
+    assert body["chunk_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_pdf_extraction_warnings_survive_to_metadata(
+    client: AsyncClient,
+) -> None:
+    # A genuinely blank page (no text inserted) produces an extraction
+    # warning — verifies the pipeline actually carries `warnings` through
+    # to the persisted document, not just that extraction detects them.
+    doc = pymupdf.open()
+    doc.new_page()
+    data: bytes = doc.tobytes()
+    doc.close()
+
+    files = {"file": ("blank.pdf", data, "application/pdf")}
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "done"
+    assert len(body["metadata_"]["warnings"]) == 1
+    assert "no extractable text" in body["metadata_"]["warnings"][0]
 
 
 @pytest.mark.asyncio
@@ -114,3 +140,28 @@ async def test_corrupt_pdf_bytes_marks_failed_not_crash(client: AsyncClient) -> 
 
     assert body["status"] == "failed"
     assert body["error_message"] is not None
+
+
+@pytest.mark.asyncio
+async def test_upload_produces_real_persisted_chunks(client: AsyncClient) -> None:
+    text = "\n\n".join(
+        f"Paragraph number {i} discusses topic {i} in reasonable detail."
+        for i in range(20)
+    )
+    files = {"file": ("report.txt", text.encode(), "text/plain")}
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    doc_body = content_res.json()
+
+    chunks_res = await client.get(f"/api/v1/documents/{doc_id}/chunks")
+    chunks = chunks_res.json()
+
+    assert doc_body["chunk_count"] == len(chunks)
+    assert len(chunks) >= 1
+    assert [c["chunk_index"] for c in chunks] == list(range(len(chunks)))
+    assert all(c["token_count"] > 0 for c in chunks)
+    # Every chunk should be real text pulled from the document, not empty.
+    assert all(c["text"].strip() for c in chunks)

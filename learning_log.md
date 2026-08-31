@@ -165,3 +165,35 @@ We also discovered another genuine bug while testing through the API. Although t
 Overall, the biggest takeaway from this phase is that document extraction is much more than just parsing files. We had to solve file persistence, build a standardized extraction pipeline, handle multiple formats, improve error recovery, validate extraction quality using real documents, and ensure structured information such as tables survives all the way from extraction to the API response.
 
 ---
+
+## 2026-08-31 — Phase 1, Week 11-12 + Test Coverage Audit
+
+**What I built:** Three chunking strategies (fixed-size, semantic, structural) wired into the real processing pipeline, a comparison script that found a real bug, and a full test coverage audit that uncovered a coverage-measurement bug of its own plus several genuine testing gaps.
+
+**What I learned:**
+
+This phase was mainly about finally making the chunking system real and verifying whether all the work done so far was actually being tested properly.
+
+The problem we were solving was that although the `chunks` table had existed since Week 5-6, nothing ever populated it. Every document had a `chunk_count` of zero. Chunking is important because documents are usually too large to send to an LLM at once, and embeddings work much better on smaller, focused pieces of content. It also makes citations more precise since we can point to a specific chunk instead of an entire document.
+
+Before building the chunkers, we extended the extraction layer by adding heading support. Word documents already contain real heading information through styles such as Title, Heading 1, and Heading 2, so we extracted that directly instead of trying to infer structure ourselves. Other formats such as PDF, Excel, and plain text were left unsupported because there was no reliable way to get the same information without much heavier processing.
+
+We then built three different chunking strategies. Fixed-size chunking was the simplest approach and just sliced text into windows based on size limits. It does not understand words, sentences, or topics, so it can easily cut content in the middle of a sentence or even a word. Semantic chunking was more intelligent and grouped sentences together based on topic similarity using term-frequency vectors and cosine similarity. Structural chunking used document headings when available and otherwise fell back to paragraph boundaries. This became the default strategy because it generally preserves the original document structure best.
+
+The chunking system was then integrated into the real processing pipeline. After extraction completes, documents are automatically chunked and real `Chunk` rows are stored in the database. The chunk table is now actually being used, and `chunk_count` reflects the real number of chunks created for each document.
+
+To compare the strategies, we ran all three against a real 34KB document. The results clearly showed why fixed-size chunking is considered a weak baseline. Most of its chunks started or ended in awkward places because it had no understanding of structure. Semantic and structural chunking produced much cleaner results and preserved context much better.
+
+The comparison script also exposed a genuine bug. Structural chunking was creating only a single chunk for the entire document. After debugging, we found that the document used Windows-style line endings while the paragraph splitter only recognized Unix-style line endings. Since no paragraph breaks were detected, the entire document became one giant chunk. Normalizing line endings inside the structural chunker fixed the problem.
+
+The second part of this work came from auditing test coverage. One of the roadmap goals was achieving complete coverage on all non-trivial functions, but we had never actually measured it. After adding coverage reporting, the initial result was only 84%, and one of the most heavily-tested files showed surprisingly low coverage.
+
+The interesting discovery was that the coverage tool itself was partially responsible. SQLAlchemy's async implementation uses greenlets internally, and the coverage tracer was not following execution correctly across those greenlet switches. This caused large portions of code to appear untested even though they were executing successfully during tests. After enabling greenlet support in the coverage configuration, the numbers immediately became much more accurate.
+
+Once the reporting issue was fixed, we started addressing the real gaps that remained. We added tests for the global exception handler, generic processing failures, endpoint consistency checks, PDF table extraction, document metadata extraction, Word title metadata, invalid text file handling, and several chunking edge cases. Many of these features had been manually verified before, but they had never been formally covered by automated tests.
+
+One useful thing that came out of this exercise was finding dead code. While writing a test for a defensive check inside the semantic chunker's cosine similarity logic, I realized the condition could never actually occur. The math made it impossible for that branch to be reached, so instead of creating a meaningless test, we removed the code entirely. That was a good reminder that coverage work is not only about increasing percentages — it can also expose unnecessary code that should not exist in the first place.
+
+By the end of the audit, coverage increased significantly, and the remaining uncovered code was limited to the PDF garbled-text recovery paths. Those branches were intentionally left as-is because the original issue only appeared on real invoices and could not be reproduced reliably with synthetic test files. Instead of forcing a brittle test, that functionality continues to be validated using the real documents that originally exposed the bug.
+
+---
