@@ -67,6 +67,11 @@ To stop everything: `docker compose down` (add `-v` to also wipe all volumes/dat
 
 **Phase 0 Complete** — clean async Python backend, containerized end-to-end, with PostgreSQL, Redis, and Langfuse all running locally behind one `docker compose up`.
 
+**Phase 1 — Document Intelligence Layer** (Months 3-5)
+
+- [x] **Week 9-10:** Document Formats
+  - *Completed 2026-08-31*: Built a real extraction pipeline for PDF (`pdfplumber` + `pymupdf` fallback), Word (`python-docx`), and Excel (`openpyxl`), unified behind one `ExtractionResult` shape. Added real file storage so uploads survive to the background processing step. Tested against 5 real invoices, found and fixed a text-scrambling bug (overlapping PDF text blocks) and a bug where extracted tables were computed but never persisted.
+
 ## Author
 
 Kanwar Yashwender Singh

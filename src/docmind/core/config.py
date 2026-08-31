@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Auth
     api_key: str = "docmind-dev-key-2026"
 
+    # Storage — where uploaded document bytes are saved on disk so the
+    # background processing task can read them after the request ends.
+    upload_dir: str = "uploads"
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

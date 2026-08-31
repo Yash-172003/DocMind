@@ -135,3 +135,33 @@ We also configured persistent volumes for all major services. From what I unders
 Finally, we encountered an issue with ClickHouse. The application kept crashing because Langfuse automatically assumed a clustered ClickHouse setup when a specific configuration variable was missing. Cluster mode requires Zookeeper, which we were not running. The fix was to explicitly disable cluster mode, which allowed ClickHouse to run as a standalone instance. This taught me that some configuration flags may look optional but can completely change how a system behaves internally.
 
 ---
+
+## 2026-08-31 — Phase 1, Week 9-10
+
+**What I built:** A real document extraction pipeline for PDF, Word, and Excel files — real file storage, a unified extraction module, and error handling that survives corrupt/unsupported files instead of crashing. Found and fixed two real bugs by testing against real invoices.
+
+**What I learned:**
+
+When I reviewed the existing upload flow, I noticed that although the API was receiving the file, it was only reading information like the filename and content type. The actual file contents were being discarded, and the background task was simply simulating work with an `asyncio.sleep`. This meant there was nothing available for extraction later. So before building any extraction logic, we had to solve the file storage problem first.
+
+We created a new `storage.py` module which is responsible for saving, reading, and deleting uploaded files. One important thing I learned is that uploaded file streams only exist during the request itself. Once the request finishes, the stream disappears. Because of that, we must save the file immediately inside the request handler before sending the response back. Otherwise, the background task would have nothing to process later. For now, files are stored on local disk, but this is mainly a temporary solution until object storage is introduced in future phases.
+
+We also built an entire extraction module to handle different document formats. Instead of writing completely different processing flows for PDFs, Word files, Excel files, and text files, we created a common `ExtractionResult` model. No matter which file type is processed, the rest of the application receives the same structure containing extracted text, metadata, tables, warnings, and page information.
+
+For PDF extraction, we primarily use `pdfplumber` and fall back to `pymupdf` when necessary. Word files are processed in a way that preserves the original document order, including both paragraphs and tables. Excel files are handled sheet by sheet, with each sheet contributing both text and structured table data. We also created a router which selects the correct extractor based on file extension. What I learned here is that file extensions are generally more reliable than HTTP headers because headers can be incorrect or manipulated.
+
+We then rewired the document processing workflow itself. The upload endpoint now saves the uploaded file before queuing background work. The old fake processing function was replaced with a real processing pipeline that reads the file back from storage, extracts its contents, stores the extracted information, and updates the document status. We also improved error handling so extraction failures mark the document as failed instead of crashing the background task entirely.
+
+Another thing I learned was how important dependency selection can be. We added libraries specifically designed for handling PDFs, Word documents, and Excel files. However, we intentionally avoided the Unstructured library even though it appeared in the roadmap. The reason was that it introduces network-dependent behavior by downloading NLP resources on first use. This would make tests unreliable because they would depend on internet access. So the decision was not just about functionality but also about maintaining a stable and reproducible testing environment.
+
+A major focus of this phase was testing. The test suite grew significantly, and instead of using fake or mocked files, every test generates real PDFs, Word documents, and Excel files using the same libraries used in production. From what I understood, this makes the tests much more realistic because they validate the actual extraction logic rather than artificial scenarios.
+
+The most interesting thing I learned came from testing against real invoices. We processed five actual invoices and discovered that two of them produced heavily scrambled text. The extraction was not failing completely, which is why our fallback mechanism never activated. The text existed, but it was clearly corrupted. After investigating, we found that the PDF generator used by those invoices positioned multiple text blocks at overlapping coordinates, causing the extractor to interleave characters incorrectly.
+
+To solve this, we created a heuristic that measures how much of the extracted text consists of extremely short words. Clean documents stayed within one range while the corrupted invoices had significantly higher scores. We then used this heuristic to automatically detect garbled text and trigger the fallback extraction path. After reprocessing the problematic invoices, both extracted correctly. What I learned from this is that failures are not always obvious. Sometimes a system technically succeeds but still produces unusable results, so we need validation checks beyond simply asking whether extraction completed.
+
+We also discovered another genuine bug while testing through the API. Although the extractors were correctly identifying tables, that table data was never being saved anywhere. The processing pipeline was only storing text and metadata, silently discarding the extracted tables. This explained why invoices appeared to lose their structured line-item information even though extraction itself was working correctly. The fix was to persist the tables into the document metadata before returning the response. After re-testing with a real invoice, all tables appeared correctly through the API with their column structure preserved.
+
+Overall, the biggest takeaway from this phase is that document extraction is much more than just parsing files. We had to solve file persistence, build a standardized extraction pipeline, handle multiple formats, improve error recovery, validate extraction quality using real documents, and ensure structured information such as tables survives all the way from extraction to the API response.
+
+---

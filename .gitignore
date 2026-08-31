@@ -35,6 +35,15 @@ Desktop.ini
 # But ignore runtime data
 docker-data/
 
+# ===== Uploaded documents =====
+# Raw uploaded file bytes saved by docmind.core.storage — runtime data, not code
+uploads/
+
+# ===== Real sample documents =====
+# Personal test files (real invoices etc.) used for manual extraction testing.
+# Never commit these — they may contain real vendor/pricing data.
+sample_documents/
+
 # ===== Testing =====
 .pytest_cache/
 htmlcov/

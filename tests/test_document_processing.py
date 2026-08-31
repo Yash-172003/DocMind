@@ -1,0 +1,116 @@
+"""End-to-end tests: upload real document bytes through the API and
+verify the background extraction pipeline actually ran, not just that
+the endpoints respond.
+"""
+
+from collections.abc import AsyncGenerator
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from docmind.core.config import settings
+from docmind.main import app
+from tests.helpers import build_docx, build_pdf, build_xlsx
+
+
+@pytest_asyncio.fixture
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": settings.api_key},
+    ) as ac:
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_pdf_upload_is_extracted(client: AsyncClient) -> None:
+    data = build_pdf(["Invoice total: 1500"])
+    files = {"file": ("invoice.pdf", data, "application/pdf")}
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "done"
+    assert "Invoice total: 1500" in body["content"]
+    assert body["metadata_"]["page_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_docx_upload_is_extracted(client: AsyncClient) -> None:
+    data = build_docx(["Quarterly report summary"])
+    files = {
+        "file": (
+            "report.docx",
+            data,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    }
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "done"
+    assert "Quarterly report summary" in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_xlsx_upload_is_extracted(client: AsyncClient) -> None:
+    data = build_xlsx({"Vendors": [["Name", "Total"], ["Acme Corp", "2000"]]})
+    files = {
+        "file": (
+            "vendors.xlsx",
+            data,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "done"
+    assert "Acme Corp" in body["content"]
+    assert body["metadata_"]["sheet_count"] == 1
+    assert body["metadata_"]["tables"] == [
+        {"page_number": 1, "rows": [["Name", "Total"], ["Acme Corp", "2000"]]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_file_type_marks_failed_not_crash(
+    client: AsyncClient,
+) -> None:
+    files = {"file": ("archive.zip", b"PK\x03\x04fake", "application/zip")}
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "failed"
+    assert body["error_message"] is not None
+
+
+@pytest.mark.asyncio
+async def test_corrupt_pdf_bytes_marks_failed_not_crash(client: AsyncClient) -> None:
+    files = {"file": ("broken.pdf", b"not actually a pdf", "application/pdf")}
+
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    content_res = await client.get(f"/api/v1/documents/{doc_id}/content")
+    body = content_res.json()
+
+    assert body["status"] == "failed"
+    assert body["error_message"] is not None

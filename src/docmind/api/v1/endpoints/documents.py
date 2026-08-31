@@ -8,7 +8,6 @@ lost. In Phase 4, we will upgrade to a proper queue (Celery + Redis)
 for reliability. But for now, this teaches the pattern correctly.
 """
 
-import asyncio
 import uuid
 
 import structlog
@@ -30,7 +29,10 @@ from docmind.api.v1.schemas.document import (
     DocumentStatusResponse,
     DocumentUploadResponse,
 )
+from docmind.core.storage import delete_upload, read_upload, save_upload
 from docmind.db.models import Chunk, Document, DocumentStatus
+from docmind.extraction.exceptions import ExtractionError
+from docmind.extraction.router import extract
 
 logger = structlog.get_logger()
 
@@ -41,16 +43,14 @@ router = APIRouter(
 )
 
 
-async def simulate_document_processing(
-    document_id: uuid.UUID, db: AsyncSession
-) -> None:
-    """Simulate document processing as a background task.
+async def process_document(document_id: uuid.UUID, db: AsyncSession) -> None:
+    """Extract a document's content as a background task.
 
-    In Phase 1, this will be replaced with real PDF/Word extraction.
-    For now, it demonstrates the async background task pattern:
     1. Mark as processing
-    2. Do work (simulated with sleep)
-    3. Mark as done (or failed)
+    2. Read the saved upload bytes and run them through the extraction
+       layer (docmind.extraction) based on file extension
+    3. Store the extracted text/metadata and mark as done — or mark as
+       failed with a clear reason, never crash the worker
     """
     try:
         result = await db.execute(select(Document).where(Document.id == document_id))
@@ -62,13 +62,40 @@ async def simulate_document_processing(
         await db.commit()
         logger.info("document_processing_started", document_id=str(document_id))
 
-        # Simulate processing time
-        await asyncio.sleep(3)
+        data = read_upload(document_id, document.filename)
+        extraction = extract(document.filename, data)
 
-        document.content = f"Extracted content from {document.filename} (simulated)"
+        document.content = extraction.text
+        metadata: dict[str, object] = dict(extraction.metadata)
+        if extraction.warnings:
+            metadata["warnings"] = extraction.warnings
+        if extraction.tables:
+            # Kept as raw structured grids (not flattened into `content`)
+            # so column alignment survives — later consumers (the audit
+            # agent in Phase 2) need real rows, not reflowed prose.
+            metadata["tables"] = [t.model_dump() for t in extraction.tables]
+        document.metadata_ = metadata
         document.status = DocumentStatus.DONE
         await db.commit()
-        logger.info("document_processing_complete", document_id=str(document_id))
+        logger.info(
+            "document_processing_complete",
+            document_id=str(document_id),
+            warnings=extraction.warnings,
+        )
+
+    except ExtractionError as e:
+        document = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if document is not None:
+            document.status = DocumentStatus.FAILED
+            document.error_message = str(e)
+            await db.commit()
+        logger.warning(
+            "document_extraction_failed",
+            document_id=str(document_id),
+            error=str(e),
+        )
 
     except Exception as e:
         document = (
@@ -109,6 +136,12 @@ async def upload_document(
     await db.commit()
     await db.refresh(document)
 
+    # UploadFile's stream is tied to this request, so the bytes must be
+    # saved to disk now — the background task runs after this handler
+    # has already returned and the stream is gone.
+    content = await file.read()
+    save_upload(document.id, document.filename, content)
+
     logger.info(
         "document_uploaded",
         document_id=str(document.id),
@@ -120,7 +153,7 @@ async def upload_document(
 
     async def _process() -> None:
         async with async_session_factory() as bg_session:
-            await simulate_document_processing(document.id, bg_session)
+            await process_document(document.id, bg_session)
 
     background_tasks.add_task(_process)
 
@@ -179,6 +212,7 @@ async def delete_document(
         )
     await db.delete(document)
     await db.commit()
+    delete_upload(document_id)
     logger.info("document_deleted", document_id=str(document_id))
 
 
