@@ -1,7 +1,7 @@
-# DocMind — Project Context & Progress
+# DocMind — Project Context
 
 > This file provides complete context for any AI assistant working on this project.
-> Last updated: 2026-08-04
+> Last updated: 2026-09-03 (through Phase 1, Week 15-16)
 
 ---
 
@@ -20,137 +20,166 @@ DocMind is a 14-month, 5-phase **Enterprise Document Intelligence Platform** bei
 
 ---
 
-## 5-Phase Overview
+## Status
 
 | Phase | Title | Timeline | Status |
 |-------|-------|----------|--------|
-| **Phase 0** | Engineering Foundations | Months 1-2 | **IN PROGRESS** (Week 5-6 done, Week 7-8 remaining) |
-| **Phase 1** | Document Intelligence Layer | Months 3-5 | NOT STARTED |
-| **Phase 2** | Agent Layer | Months 6-9 | NOT STARTED |
-| **Phase 3** | Reliability Engineering | Months 10-12 | NOT STARTED |
-| **Phase 4** | Infrastructure (Cloud) | Months 13-14 | NOT STARTED |
+| **Phase 0** | Engineering Foundations | Months 1-2 | ✅ Complete |
+| **Phase 1** | Document Intelligence Layer | Months 3-5 | **IN PROGRESS** — Weeks 9-16 done, Week 17-18 next |
+| **Phase 2** | Agent Layer | Months 6-9 | Not started |
+| **Phase 3** | Reliability Engineering | Months 10-12 | Not started |
+| **Phase 4** | Infrastructure (Cloud) | Months 13-14 | Not started |
+
+Everything below describes the system **as it exists right now** — not a history of how it got here. For the week-by-week history, `README.md`'s "Current Phase" section and `learning_log.md`/`confusion_log.md` have the full record.
 
 ---
 
-## Detailed Progress — Phase 0
+## Architecture — the pipeline as it stands today
 
-### Week 1-2: Production-Grade Python ✅ COMMITTED
+A document's life cycle, end to end:
 
-**Git commits:** `ffe3ccf` (2026-06-12), `66777fa` (2026-06-15), `2f31cbe` (2026-06-15)
+```
+POST /api/v1/documents/upload
+        │
+        ▼
+  save bytes to disk (uploads/{id}/{filename})   ← must happen before the
+        │                                          request returns; the
+        ▼                                          background task runs after
+  BackgroundTask: process_document()
+        │
+        ├─▶ extraction.router.extract()      → ExtractionResult (text, pages,
+        │                                       tables, headings, metadata,
+        │                                       warnings) — same shape for
+        │                                       every format
+        │
+        ├─▶ chunking.strategy.chunk_document() → list[TextChunk], using
+        │                                        settings.chunking_strategy
+        │                                        (default: structural)
+        │
+        ├─▶ embedding.embedder.Embedder.embed_batch()  → one batch call,
+        │                                        1024-dim vectors
+        │                                        (BAAI/bge-large-en-v1.5)
+        │
+        └─▶ persist: Document (content, metadata_, chunk_count) +
+                     Chunk rows (text, embedding, token_count,
+                     page_numbers, section_heading) — via SQLAlchemy,
+                     text_search (tsvector) computed by Postgres itself
 
-**What was built:**
-- Scaffolded the project with `uv` (replaces pip/requirements.txt)
-- FastAPI async app with `/health` endpoint
-- Strict tooling: `ruff` (linter/formatter), `mypy` (strict=true), `pytest-asyncio`
-- Structured JSON logging via `structlog` (replaces print)
-- Async test suite with `httpx.AsyncClient`
+GET /api/v1/search?q=...
+        │
+        ├─▶ dense_search()   — pgvector HNSW, cosine distance
+        ├─▶ sparse_search()  — GIN-indexed candidates, hand-rolled BM25 scoring
+        ├─▶ reciprocal_rank_fusion()  — merges the two by rank position
+        └─▶ Reranker.rerank() (optional, default on) — cross-encoder/
+             ms-marco-MiniLM-L-6-v2 re-scores the fused candidates
+```
 
-**Key files:**
-- `src/docmind/main.py` — FastAPI entry point with lifespan events
-- `src/docmind/core/config.py` — Pydantic Settings (reads `.env`)
-- `src/docmind/core/logging.py` — structlog configuration
-- `pyproject.toml` — dependency management, ruff/mypy/pytest config
-- `tests/test_main.py` — async health check test
+Nothing generates a synthesized answer yet — `/search` returns ranked chunks, not prose. That's Week 17-18.
 
----
+### Extraction (`src/docmind/extraction/`)
+- `router.py` dispatches by file **extension**, not the client's `Content-Type` header (unreliable/spoofable).
+- `pdf.py` — `pdfplumber` primary, `pymupdf` fallback. The fallback triggers on **empty text** and, since a real-invoice bug, on **garbled text** too (a heuristic: fraction of extracted tokens ≤2 chars, threshold 0.30 — see Key Decisions).
+- `word.py` — `python-docx`; walks the document body in reading order (not paragraphs-then-tables) and reads real `Heading 1`/`Heading 2`/`Title` paragraph styles into `ExtractionResult.headings`.
+- `excel.py` — `openpyxl`; each sheet becomes one page and one table.
+- `text.py` — trivial UTF-8 decode; raises `CorruptDocumentError` on invalid bytes.
+- Every extractor returns the same `ExtractionResult` shape (`models.py`) regardless of format — this is the seam that lets chunking/embedding/retrieval stay format-agnostic.
 
-### Week 2: Docker Infrastructure ✅ COMMITTED
+### Chunking (`src/docmind/chunking/`)
+Three interchangeable strategies behind `strategy.chunk_document()`, selected by `settings.chunking_strategy` (`ChunkingStrategy` enum):
+- `fixed_size.py` — naive fixed-character windows with overlap. Kept specifically to demonstrate the failure mode (cuts mid-word/mid-sentence), not used in production.
+- `semantic.py` — sentence-splits, groups by hand-rolled TF-cosine similarity, breaks early on topic shift.
+- `structural.py` — **the default.** Uses real headings (Word) when available, falls back to paragraph boundaries otherwise. Normalizes `\r\n` internally (a real bug found against a Windows-authored file — see Key Decisions). Also the only strategy that populates `section_heading`.
+- `tokens.py` — token counts are **approximated** (`len(text) // 4`), not from a real tokenizer — deliberately, to avoid a network-download dependency before an embedding model was chosen. Not yet revisited now that one has been (still open — see Known Gaps).
 
-**Git commits:** `5c7d582` (2026-06-22), `0f6a214`, `253f091`
+### Embedding (`src/docmind/embedding/`)
+- `embedder.py` — `Embedder(model_name)`, model loading cached by name (`@lru_cache`, since loading ~1.3GB of weights is the expensive part). `embed_batch()` batches (never one-at-a-time) and L2-normalizes output (`normalize_embeddings=True`), matching what the HNSW index's `vector_cosine_ops` expects.
+- Production model: `BAAI/bge-large-en-v1.5`, 1024 dimensions (verified empirically — matches `Vector(1024)` set up back in Week 5-6, before this model was chosen). Tests use `all-MiniLM-L6-v2` (384-dim, ~90MB) to avoid downloading the full production model for every test run.
+- PyTorch is installed **CPU-only** via a `uv` index override in `pyproject.toml` (`[tool.uv.sources]` / `[[tool.uv.index]]` pointing at `download.pytorch.org/whl/cpu`) — the default PyPI wheel bundles multi-GB CUDA that isn't needed at this scale.
 
-**What was built:**
-- `docker-compose.yml` with PostgreSQL (pgvector image) + Redis
-- Persistent volumes (`postgres_data`, `redis_data`) so data survives container deletion
-- Health checks every 10 seconds on both services
-- `.env` / `.env.example` pattern for secrets management
-- Fixed Pydantic `extra="ignore"` to skip unrecognized env vars
+### Retrieval (`src/docmind/retrieval/`)
+- `dense.py` — pgvector cosine search via the existing HNSW index.
+- `sparse.py` — real, hand-rolled **Okapi BM25** (k1=1.5, b=0.75). Deliberately not Postgres's `ts_rank`/`ts_rank_cd` (different formula) — the GIN-indexed `text_search` tsvector column only finds *candidates* fast; scoring is computed in Python so the algorithm is actually understood, not borrowed. Known imprecision: term frequency is counted from raw regex-tokenized chunk text (no stemming), while the GIN index candidates come from Postgres's stemmed tsvector lexemes — a documented mismatch, not a bug.
+- `fusion.py` — Reciprocal Rank Fusion (k=60), combines dense+sparse rankings by rank position, not raw score (the two scores aren't on comparable scales).
+- `reranker.py` — `cross-encoder/ms-marco-MiniLM-L-6-v2`, scores (query, chunk) pairs jointly in one forward pass each — more accurate than the bi-encoder embedding model, too slow to run over a whole corpus, so it only reranks hybrid search's already-narrowed candidate set.
+- `hybrid.py` — orchestrates all of the above; `reranker=None` gives hybrid-without-rerank.
+- Exposed via `GET /api/v1/search` (`q`, `limit`, `document_id`, `rerank` query params).
 
-**Key files:**
-- `docker-compose.yml` — PostgreSQL (pgvector) + Redis services
-- `.env.example` — template for required env vars
-- `.env` — actual secrets (git-ignored)
+### Database schema (current)
+`documents`: `id`, `filename`, `content_type`, `status` (enum: pending/processing/done/failed), `content` (full extracted text), `error_message`, `metadata_` (JSONB — page_count, author, warnings, tables as raw grids), `chunk_count`, `created_at`, `updated_at`. Indexes: B-tree on `status`, GIN on `metadata_`.
 
----
+`chunks`: `id`, `document_id` (FK, `ondelete="CASCADE"`), `chunk_index`, `text`, `embedding` (`Vector(1024)`, nullable), `token_count`, `page_numbers` (`ARRAY(Integer)`), `section_heading` (nullable — only structural chunking on Word populates it), `text_search` (`TSVECTOR`, **generated column**, computed by Postgres from `text` on every write), `created_at`. Indexes: composite B-tree on `(document_id, chunk_index)`, HNSW on `embedding` (`vector_cosine_ops`), GIN on `text_search`.
 
-### Week 3-4: FastAPI + API Design ✅ COMMITTED
+4 migrations applied, in order: `83e4f51fc402` (initial documents table) → `0d5a7cfa563b` (chunks table + JSONB + pgvector) → `523a2792a5ca` (section_heading) → `ad1d1c7c2255` (text_search + GIN).
 
-**Git commits:** `cfa7e71` (2026-07-13), `dcafa3a`, `eee06fe`
+### API endpoints
+All under `/api/v1`, all requiring `X-API-Key` header:
+- `POST /documents/upload` — save + queue background processing, 202 immediately
+- `GET /documents/{id}/status` — lightweight status poll
+- `GET /documents/{id}/content` — full document (content, metadata_, chunk_count)
+- `GET /documents/{id}/chunks` — all chunks for a document, ordered
+- `DELETE /documents/{id}` — deletes row (cascades to chunks) + uploaded file
+- `GET /search` — hybrid retrieval, returns ranked `ScoredChunk[]`
 
-**What was built:**
-- Full async CRUD API for documents: upload, status check, content retrieval, delete
-- Dependency Injection via `api/deps.py` (database sessions + API key auth)
-- Background Tasks for async document processing (returns 202 immediately)
-- Pydantic v2 response schemas (never leak raw ORM objects)
-- SQLAlchemy async ORM with `asyncpg` driver
-- Alembic migrations (async-sync bridge via `run_sync`)
-- Lifespan events for DB engine startup/shutdown
-- Global exception handler (clean JSON errors, no stack traces to clients)
-- Integration tests for all endpoints
+Plus `GET /health` (no auth).
 
-**Key files:**
-- `src/docmind/api/deps.py` — `get_db()` and `verify_api_key()` dependencies
-- `src/docmind/api/v1/endpoints/documents.py` — HTTP routes (upload, status, content, delete)
-- `src/docmind/api/v1/schemas/document.py` — Pydantic response models
-- `src/docmind/db/base.py` — async engine + session factory
-- `src/docmind/db/models.py` — SQLAlchemy ORM models
-- `alembic/env.py` — async migration bridge
-- `alembic/versions/83e4f51fc402_initial_document_schema.py` — first migration
-- `tests/test_documents.py` — full endpoint integration tests
+### Infrastructure
+`docker-compose.yml` default (`docker compose up -d --build`): `app` (multi-stage Dockerfile, `development` target for local work), `db` (`pgvector/pgvector:pg16`), `redis`. Langfuse (6 services: web, worker, its own Postgres/Redis/ClickHouse/MinIO) is **opt-in** behind `docker compose --profile langfuse up -d` — not wired into the app yet (that's Phase 3 instrumentation), and running it alongside the embedding pipeline exhausted RAM on a 16GB dev machine (see Key Decisions). A named volume (`huggingface_cache`) persists downloaded model weights across container recreates.
 
-**API endpoints (all under `/api/v1/documents`):**
-- `POST /upload` — upload document, get job ID back immediately (202)
-- `GET /{id}/status` — poll processing status
-- `GET /{id}/content` — retrieve processed content
-- `DELETE /{id}` — delete document
-
----
-
-### Week 5-6: PostgreSQL Mastery ⚠️ BUILT BUT NOT COMMITTED
-
-**Status:** All code is written, migration applied to the running DB, EXPLAIN ANALYZE verified. Changes are unstaged in git. Yash has NOT yet written his learnings, so commit is on hold per the workflow rule.
-
-**What was built:**
-
-1. **Full Database Schema** — expanded `models.py` from 1 table to 2:
-   - `documents` (parent) — added `metadata_` (JSONB), `chunk_count` (denormalized int)
-   - `chunks` (child) — new table with `document_id` FK (CASCADE delete), `chunk_index`, `text`, `embedding` (Vector(1024)), `token_count`, `page_numbers` (ARRAY)
-   - One-to-many relationship: `document.chunks` with `cascade="all, delete-orphan"`
-
-2. **Custom Indexes:**
-   - `ix_documents_status` — B-tree on `documents.status` (fast filter by processing state)
-   - `ix_documents_metadata` — GIN on `documents.metadata_` (search inside JSONB)
-   - `ix_chunks_document_id_chunk_index` — Composite B-tree for ordered chunk retrieval per document
-   - `ix_chunks_embedding_hnsw` — HNSW vector index for approximate nearest neighbor search (cosine similarity)
-
-3. **Connection Pooling** — configured `create_async_engine` with `pool_size=5`, `max_overflow=10`, `pool_timeout=30`, `pool_pre_ping=True`
-
-4. **Alembic Migration** — `0d5a7cfa563b_add_chunks_table_jsonb_metadata_.py` (enables pgvector extension, creates chunks table, adds indexes)
-
-5. **EXPLAIN ANALYZE Script** — `scripts/explain_queries.py` seeds 100 documents + 1000 chunks with random 1024-dim vectors, then runs 5 query patterns:
-   - Primary Key lookup → Index Scan ✅
-   - Chunks by document, ordered → Bitmap Index Scan on composite index ✅
-   - Filter by status → Index Scan on status index ✅
-   - JSONB metadata search → Bitmap Index Scan on GIN index ✅
-   - Vector similarity (cosine) → Index Scan on HNSW index ✅
-
-6. **New endpoint:** `GET /documents/{id}/chunks` — retrieve all chunks for a document
-
-7. **Schema updates:** Added `ChunkResponse`, updated `DocumentResponse` with `metadata_` and `chunk_count`
-
-**Uncommitted files:**
-- Modified: `pyproject.toml`, `src/docmind/db/models.py`, `src/docmind/db/base.py`, `src/docmind/api/v1/endpoints/documents.py`, `src/docmind/api/v1/schemas/document.py`, `uv.lock`
-- New: `alembic/versions/0d5a7cfa563b_*.py`, `scripts/explain_queries.py`, `scripts/explain_output.txt`
+### Testing
+106 tests (`pytest --cov`), 99% coverage. Every fixture is a real generated file/document, never a mock of extraction/DB behavior — the DB layer is the real dev Postgres throughout, no test database isolation. `[tool.coverage.run] concurrency = ["greenlet", "thread"]` is required for accurate numbers (SQLAlchemy's async engine bridges to its sync driver via greenlet switches that `coverage.py` doesn't follow by default — see Key Decisions).
 
 ---
 
-### Week 7-8: Docker + Local Infrastructure ❌ NOT STARTED
+## Key Decisions & Why (Week 5-6 through 15-16)
 
-**Roadmap requires:**
-- Multi-stage Dockerfiles (development vs production images, layer caching)
-- Containerize the FastAPI app itself (currently only DB/Redis are containerized)
-- Add Langfuse (self-hosted observability) to docker-compose
-- `docker-compose up` should start: FastAPI app + PostgreSQL/pgvector + Redis + Langfuse
-- Write a README so anyone can start the full stack with one command
+- **JSONB for document metadata, not fixed columns** — different formats produce different metadata shapes; GIN-indexed JSONB avoids a column per possible field.
+- **HNSW over IVFFlat for the vector index** — works well from the first insert (no training step), better recall, at the cost of more memory — acceptable at this scale.
+- **Connection pooling tuned explicitly** (`pool_size=5, max_overflow=10, pool_pre_ping=True`) rather than left default.
+- **Unified `ExtractionResult` shape across all formats** — the single most load-bearing design decision in the whole pipeline; chunking/embedding/retrieval never need to know what format a document started as.
+- **PDF fallback (`pymupdf`) triggers on garbled text, not just empty text** — found via 5 real invoices: two TallyPrime-exported ones had non-empty but scrambled text (overlapping text blocks confusing `pdfplumber`'s line reconstruction). The garbling heuristic (≤2-char-token fraction ≥0.30) was tuned against those real files; a synthetic reproduction attempt for automated testing was explicitly abandoned as unreliable (documented in `confusion_log.md`) — validated against the real files instead.
+- **`Unstructured` library skipped** despite being named in the roadmap — its PDF/text partitioning downloads NLTK data over the network on first use, which would make the test suite depend on internet access.
+- **Structural chunking is the production default**, not semantic or fixed-size — best preserves real document structure when available (headings), falls back gracefully to paragraphs otherwise.
+- **Extracted tables are persisted as raw grids in `metadata_["tables"]`**, never flattened into `content` — a real bug (found via manual testing) had them computed but silently discarded; column alignment matters for future consumers (e.g. the Phase 2 invoice audit agent) that need real rows, not reflowed prose.
+- **Token counts are a `len(text)//4` approximation**, not a real tokenizer — avoiding a network-dependent tokenizer download before an embedding model was chosen (Week 11-12). Still true even after Week 13-14 picked `bge-large-en-v1.5` — worth revisiting (see Known Gaps).
+- **BM25 hand-rolled instead of using Postgres's `ts_rank`** — the point of this week's Okapi BM25 paper reading was understanding the algorithm, not calling a library; the GIN index is used for fast candidate retrieval only.
+- **RRF fuses by rank position, not raw score** — dense (cosine similarity) and sparse (BM25) scores are on incomparable scales.
+- **CPU-only PyTorch via a `uv` index override** — the default PyPI wheel bundles multi-GB CUDA support not needed at this project's scale.
+- **Langfuse moved behind an opt-in Compose profile** (`profiles: ["langfuse"]`) — running its 6 containers (ClickHouse/MinIO especially) alongside the embedding pipeline exhausted RAM (down to 0.62GB free of 15.24GB) on the actual dev machine, surfacing as three different-looking failures before the real cause was found. Langfuse isn't wired into the app yet anyway (Phase 3), so nothing is lost by deferring it.
+- **`concurrency = ["greenlet", "thread"]` in `[tool.coverage.run]`** — without it, `coverage.py` silently under-reports every route handler that awaits a DB call (SQLAlchemy's async-to-sync bridge uses greenlets, which the default tracer doesn't follow). First measurement showed 84% with `documents.py` at a false 37%; fixed measurement showed 93% and `documents.py` at a real 88%.
+- **Standalone scripts (`scripts/*.py`) insert `src` onto `sys.path` manually** — there's no `[build-system]` in `pyproject.toml`, so `docmind` is never actually installed as a package; only pytest's `pythonpath = ["src"]` and each script's own `sys.path.insert()` make imports resolve. Alembic commands need `PYTHONPATH=src` prefixed for the same reason.
+
+---
+
+## Tried and Rejected
+
+- **Postgres's native `ts_rank`/`ts_rank_cd`** for sparse scoring — works, but isn't BM25; rejected in favor of hand-rolling the real algorithm (see Key Decisions).
+- **Pinning `transformers<5.0`** to dodge a Windows-specific native crash in its newer threaded model-loading path — blocked outright: `sentence-transformers>=6.0.1` requires `transformers>=5.0.0,<6.0.0`, so this was never installable.
+- **`HF_DEACTIVATE_ASYNC_LOAD=1`** as a fix for that same crash (a real, documented env var for disabling `transformers`' threaded checkpoint loading) — tried, crash reproduced identically. The real cause was system memory exhaustion (0.62GB free), not the threading path; the env var was chasing the wrong hypothesis.
+- **Synthetic PDF fixtures to reproduce the garbling bug for an automated test** — multiple attempts to recreate the exact character-interleaving statistics via `pymupdf`-drawn overlapping text never crossed the tuned detection threshold (real files scored 0.39-0.40 short-token ratio; synthetic attempts topped out at 0.14-0.24). Abandoned in favor of a direct unit test of the heuristic function using the actual garbled text, plus manual validation against the real files.
+- **Azure Document Intelligence integration** — named in the roadmap as leveraging Yash's existing strength, but never implemented: requires a real Azure subscription/API key that wasn't provisioned, and building a "comparison" without real credentials would be theater. Explicitly deferred, not forgotten.
+- **Excel/Word extraction robustness testing against real-world files** — only PDF got the "find real bugs" treatment (5 real invoices). DOCX/XLSX extractors have only ever been tested against files this project's own test suite generated (`python-docx`/`openpyxl` building their own fixtures) — a real, acknowledged gap, explicitly excluded from a coverage-audit pass at Yash's request pending a real file being available.
+
+---
+
+## Known Gaps / Documented Limitations
+
+- **PDF and Excel/plain-text have no heading detection** — structural chunking always falls back to paragraph boundaries for them. Word is the only format with real structural signal.
+- **Token counting is still `len(text)//4`**, not `bge-large-en-v1.5`'s actual tokenizer, even though that model is now the committed choice.
+- **BM25's term-frequency tokenization doesn't match the GIN index's stemming** (raw regex words vs. Postgres's stemmed lexemes) — candidates can be found via a stem match but under-counted during scoring.
+- **Dense retrieval is fragile (not immune) on bare identifiers** — measured directly: two chunks differing only by one digit sequence separate by only ~0.03 cosine similarity, versus ~0.1-0.3+ for genuinely different topics. Real in isolation, but a margin that thin would likely lose to an unrelated-but-broadly-similar chunk in a larger corpus.
+- **`pdf.py`'s garbled/empty-recovery branches sit at 88% coverage**, intentionally — validated against real invoices, not a synthetic test (see Tried and Rejected).
+- **No LLM API has been called anywhere in the codebase yet.** Everything through Week 15-16 is extraction, chunking, embedding, and retrieval — all local/free. Week 17-18 is the first point a generative model (Gemini, per the roadmap's cost plan) enters the system at all.
+
+---
+
+## What Week 17-18 (RAG Generation) Needs to Pick Up
+
+Per `Docs/DocMind.txt`: prompt design with `[1]`, `[2]` source markers instructing the model to cite every claim; citation grounding (parse the response, extract citations, link back to source passages); faithfulness enforcement (the model must say "not in documents" rather than fabricate); and handling contradicting sources across documents.
+
+Concretely, this needs:
+1. **A first LLM API integration** — nothing calls an external LLM yet. The roadmap's cost plan specifies the Gemini API (free tier, 1,500 req/day) as primary, with Groq as a backup.
+2. **Consuming `/search`'s `ScoredChunk[]` output** as the context fed into that prompt — the retrieval layer already returns exactly the ranked, scored chunks (with `document_id`, `chunk_index`, `page_numbers`) a citation needs to point back to.
+3. A new response shape distinct from `ScoredChunk` — probably an answer string plus a list of citations, each resolving back to a specific chunk.
 
 ---
 
@@ -159,79 +188,56 @@ DocMind is a 14-month, 5-phase **Enterprise Document Intelligence Platform** bei
 ```
 e:\DocMind\
 ├── Docs/
-│   └── DocMind.txt              # Master 14-month roadmap
+│   └── DocMind.txt                    # Master 14-month roadmap
 ├── alembic/
-│   ├── env.py                   # Async-sync bridge for migrations
-│   └── versions/
-│       ├── 83e4f51fc402_*.py    # Initial documents table (committed)
-│       └── 0d5a7cfa563b_*.py    # Chunks + indexes + pgvector (uncommitted)
-├── scripts/
-│   ├── explain_queries.py       # EXPLAIN ANALYZE script (uncommitted)
-│   └── explain_output.txt       # Query plan results (uncommitted)
+│   ├── env.py                         # Async-sync bridge for migrations
+│   └── versions/                      # 4 migrations, see Database schema above
+├── scripts/                           # One-off measurement/comparison scripts (not part of the app)
+│   ├── explain_queries.py             # Week 5-6: EXPLAIN ANALYZE on 5 query patterns
+│   ├── compare_chunking.py            # Week 11-12: fixed/semantic/structural comparison
+│   ├── measure_embedding_batching.py  # Week 13-14: batching speedup measurement
+│   └── evaluate_retrieval.py          # Week 15-16: 20-question dense/sparse/hybrid eval
 ├── src/docmind/
-│   ├── __init__.py
-│   ├── main.py                  # FastAPI app with lifespan + exception handler
+│   ├── main.py                        # FastAPI app, lifespan, global exception handler
 │   ├── api/
-│   │   ├── deps.py              # get_db(), verify_api_key()
+│   │   ├── deps.py                    # get_db(), verify_api_key()
 │   │   └── v1/
 │   │       ├── endpoints/
-│   │       │   └── documents.py # CRUD + chunks endpoint
-│   │       └── schemas/
-│   │           └── document.py  # Pydantic response models
+│   │       │   ├── documents.py       # Upload/status/content/chunks/delete + process_document()
+│   │       │   └── search.py          # Hybrid search endpoint
+│   │       └── schemas/document.py    # Pydantic response models
 │   ├── core/
-│   │   ├── config.py            # Pydantic Settings
-│   │   └── logging.py           # structlog config
-│   └── db/
-│       ├── base.py              # Async engine + session factory + pooling
-│       └── models.py            # Document + Chunk ORM models
-├── tests/
-│   ├── test_main.py             # Health check test
-│   └── test_documents.py        # Full endpoint integration tests
-├── docker-compose.yml           # PostgreSQL (pgvector) + Redis
-├── pyproject.toml               # uv deps, ruff, mypy, pytest config
-├── learning_log.md              # Yash's own-words understanding
-├── confusion_log.md             # Questions & confusions tracked
-├── .env                         # Real secrets (git-ignored)
-└── .env.example                 # Secret template for other devs
+│   │   ├── config.py                  # Settings (chunking/embedding/reranker model choices)
+│   │   ├── logging.py                 # structlog config
+│   │   └── storage.py                 # Local disk upload storage
+│   ├── db/
+│   │   ├── base.py                    # Async engine + session factory + pooling
+│   │   └── models.py                  # Document + Chunk ORM models
+│   ├── extraction/                    # router, pdf, word, excel, text, models, exceptions
+│   ├── chunking/                      # strategy, fixed_size, semantic, structural, tokens, models
+│   ├── embedding/                     # embedder.py (Embedder class, model caching)
+│   └── retrieval/                     # dense, sparse, fusion, reranker, hybrid, models
+├── tests/                             # 106 tests, mirrors src/ structure, 99% coverage
+├── docker-compose.yml                 # app + db + redis by default; langfuse behind --profile
+├── Dockerfile                         # multi-stage: development / production targets
+├── pyproject.toml                     # uv deps, ruff, mypy, pytest, coverage, uv CPU-torch index
+├── learning_log.md                    # Yash's own-words understanding, one entry per week
+├── confusion_log.md                   # Real bugs/surprises found, written by Claude
+├── .env                                # Real secrets (git-ignored)
+└── .env.example                        # Secret template
 ```
 
 ---
 
-## Tech Stack
+## Key Patterns & Decisions (standing rules)
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Language | Python 3.12 | Async, typed, AI ecosystem |
-| Framework | FastAPI | Async-native, dependency injection, auto-docs |
-| ORM | SQLAlchemy 2.0 (async) | Mapped columns, type-safe, asyncpg driver |
-| Database | PostgreSQL + pgvector | Vector search in the same DB, no vendor lock-in |
-| Cache | Redis | Session caching, rate limiting (future) |
-| Migrations | Alembic | Schema versioning, auto-generate from models |
-| Validation | Pydantic v2 | Request/response schemas, settings management |
-| Logging | structlog | JSON in production, pretty in development |
-| Linting | ruff | Hyper-fast Python linter + formatter |
-| Type Check | mypy (strict) | Catches type errors before runtime |
-| Testing | pytest + pytest-asyncio | Async test support, httpx for API tests |
-| Deps | uv | Deterministic, fast package management |
-| Containers | Docker Compose | PostgreSQL + Redis orchestration |
-
----
-
-## Key Patterns & Decisions
-
-1. **Never commit without learning log entry** — Yash must articulate what he learned in his own words before any git commit.
-2. **No paid services** unless explicitly requested (OpenAI, Pinecone, etc.). Use free tiers: Gemini API, Ollama, local sentence-transformers.
-3. **All code is async** — blocking the event loop is unacceptable.
-4. **All functions have type hints** — `mypy strict=true` enforced.
-5. **Response schemas are explicit** — never return raw ORM objects from the API.
-6. **B008 (Depends in defaults)** is ignored in ruff — this is idiomatic FastAPI.
-7. **Alembic excluded from ruff** — auto-generated migration files have long lines.
-8. **`asyncio_default_test_loop_scope = "session"`** in pyproject.toml — prevents the dead-event-loop bug where the SQLAlchemy pool references a destroyed loop.
-
----
-
-## Immediate Next Steps
-
-1. **Yash writes Week 5-6 learnings** → then commit the unstaged changes
-2. **Week 7-8: Containerization** — Multi-stage Dockerfile for FastAPI, add Langfuse to docker-compose
-3. After Week 7-8 → Phase 0 is complete → begin Phase 1 (Document Intelligence)
+1. **Never commit without a learning log entry** — Yash writes what he learned in his own words (spelling/grammar corrected, voice preserved) before any commit. Claude writes `confusion_log.md` entries for real bugs/surprises found along the way, in the same commit.
+2. **A matching checkbox entry goes into `README.md`'s "Current Phase" section every time**, alongside the learning log — not optional, done automatically.
+3. **No paid services** unless explicitly requested. Free tiers/local only: Gemini API, Ollama, local `sentence-transformers`, self-hosted Langfuse.
+4. **All code is async**; blocking the event loop is unacceptable.
+5. **All functions have type hints**; `mypy strict=true` enforced, zero errors maintained.
+6. **Response schemas are explicit** — never return raw ORM objects from the API.
+7. **Real fixtures over mocks** — tests generate real PDFs/DOCX/XLSX via the same libraries production code uses, and hit the real dev Postgres; nothing about extraction, chunking, or the DB layer is mocked.
+8. **When a measured result contradicts a prediction (the roadmap's or a design assumption), investigate and report honestly** — don't reshape the test until the numbers match, and don't quietly bury the discrepancy. Several of the entries in Key Decisions above exist because of this.
+9. **`B008` (Depends in defaults) ignored in ruff** — idiomatic FastAPI. **Alembic excluded from ruff** — auto-generated files have long lines. **`asyncio_default_test_loop_scope = "session"`** — prevents a dead-event-loop bug in the SQLAlchemy pool.
+10. Before running host-side tests that load heavy ML models (`bge-large`, the cross-encoder), stop the `app` Docker container first if memory is tight — both would otherwise load separate copies of the same models simultaneously.
