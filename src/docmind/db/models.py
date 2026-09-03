@@ -23,6 +23,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -32,7 +33,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -176,6 +177,19 @@ class Chunk(Base):
     # chunks and for structural chunks with no heading signal available.
     section_heading: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Full-text search vector — PostgreSQL derives this automatically
+    # from `text` (STORED generated column, computed on every insert/
+    # update, not at query time). to_tsvector() lowercases, stems
+    # ("running" -> "run"), and strips stopwords, then the GIN index
+    # below makes `text_search @@ query` fast even over many chunks.
+    # This is the sparse/lexical half of hybrid retrieval — good at
+    # exact term matches ("PO-2024-1234") that embeddings blur together.
+    text_search: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', text)", persisted=True),
+        nullable=False,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -202,4 +216,9 @@ class Chunk(Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        # GIN index on the full-text search vector — the sparse-retrieval
+        # counterpart to the HNSW index above. GIN (Generalized Inverted
+        # Index) maps each lexeme to the rows containing it, so
+        # `text_search @@ query` doesn't need to scan every chunk.
+        Index("ix_chunks_text_search_gin", "text_search", postgresql_using="gin"),
     )

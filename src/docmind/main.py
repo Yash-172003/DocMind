@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from docmind.api.v1.endpoints.documents import router as documents_router
+from docmind.api.v1.endpoints.search import router as search_router
 from docmind.core.config import settings
 from docmind.core.logging import configure_logging
 from docmind.db.base import engine
@@ -55,6 +56,7 @@ app = FastAPI(
 
 # Register routers
 app.include_router(documents_router, prefix=settings.api_v1_str)
+app.include_router(search_router, prefix=settings.api_v1_str)
 
 
 @app.exception_handler(Exception)

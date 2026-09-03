@@ -219,3 +219,42 @@ The first one is that batching barely helps with the model we're actually using.
 The second one is that the machine ran out of memory, and it looked like three different unrelated bugs before we found the real cause. What happened is we ran the full test suite while the Docker container was up (Langfuse alone is 8 services), and we first got a "paging file is too small" `OSError`. Then on the retry we got a raw Windows access violation crash inside `transformers`' native model-loading code. We initially chased this as a library bug and tried disabling threaded loading with `HF_DEACTIVATE_ASYNC_LOAD`, which did nothing. The real cause turned out to be that there was only 0.62GB of free RAM out of 15.24GB total. And stopping the containers didn't fully give it back either — Docker's WSL2 VM holds onto its memory balloon until it restarts — so we had to run `wsl --shutdown`, which got us back to about 5GB free. Since Langfuse isn't even wired into the app yet (that's Phase 3) and its 6 containers, including ClickHouse and MinIO, are the heaviest part of the whole stack, we made it opt-in through a Docker Compose profile instead of always-on. So now a plain `docker compose up` only starts `app`, `db`, and `redis`, and you run `docker compose --profile langfuse up -d` when you actually need the observability stack.
 
 ---
+
+## 2026-09-03 — Phase 1, Week 15-16: Hybrid Retrieval
+
+**What I built:** Dense + sparse (hand-rolled BM25) retrieval, fused with Reciprocal Rank Fusion and reranked with a cross-encoder, exposed through a new `/api/v1/search` endpoint. Evaluated all four configurations on 20 real questions and found a genuine surprise worth investigating instead of ignoring.
+
+**What I learned:**
+
+So we added full-text search to the schema. `Chunk.text_search` is a generated `tsvector` column, which means Postgres derives and stores it automatically on every insert and update rather than computing it at query time. This is the sparse/lexical half of hybrid search, sitting alongside the vector index we've had since Week 5-6.
+
+Now, we created `src/docmind/retrieval/` with five modules in it.
+
+`dense.py` is the straightforward one — it embeds the query and asks pgvector for the nearest neighbors by cosine distance.
+
+`sparse.py` is real BM25, hand-rolled, and we deliberately did not use Postgres's own `ts_rank`. The idea is that the index is good at quickly finding candidates — any chunk containing any of the query terms — but the actual scoring, meaning term frequency with saturation, IDF, and document-length normalization, is done in Python. This week's reading was the Okapi BM25 paper, and implementing it yourself is what "understand the algorithm" actually means. Leaning on a library or on Postgres's own ranking formula would skip the part where you learn it.
+
+`fusion.py` does Reciprocal Rank Fusion, which combines the dense and sparse rankings by position rather than by raw score. That's the important bit — a cosine similarity and a BM25 score aren't on comparable scales, so you can't just add them together.
+
+`reranker.py` wraps a cross-encoder, and this is fundamentally different from the embedding model. A cross-encoder feeds the query and the chunk into the model together, which makes it much more accurate, but it means one forward pass per pair — way too slow to run across a whole corpus. So it only reranks the small candidate set that hybrid search has already narrowed down.
+
+`hybrid.py` ties all of it together into the 4 configurations the roadmap's evaluation table names.
+
+We also added the `/api/v1/search` endpoint. This is the first point where DocMind actually answers a question about its documents instead of just ingesting them, and we verified it live against the real containerized pipeline.
+
+Then we did the 20-question evaluation, and this is where we got an honest surprise. 10 exact-lookup questions and 10 semantic ones, run against a real ingested document, measuring hit@5.
+
+| Method | Exact | Semantic | Overall |
+|--------|-------|----------|---------|
+| Dense only | 90% | 90% | 90% |
+| Sparse only (BM25) | 90% | 80% | 85% |
+| Hybrid, no rerank | 90% | 100% | 95% |
+| Hybrid + rerank | 100% | 90% | 95% |
+
+Hybrid did beat either method on its own, which is what was predicted. But dense-only scoring 90% on the exact questions flatly contradicts the roadmap's claim that dense is bad at exact lookups, and that felt worth digging into rather than just shrugging at.
+
+What we found is that our "exact" questions were still natural-language questions loaded with semantic context — something like "What is the exact embedding model specified for production use?" — which the embedding model can partly answer from meaning alone, without ever needing the identifier. So we isolated a sharper version of the test: two chunks identical except for one digit sequence, queried by the bare identifier.
+
+Dense retrieval does still rank the correct one higher — but by a margin of only 0.03, where genuinely different topics usually separate by 0.1 to 0.3 or more. That's the real finding. Dense retrieval isn't blind to exact identifiers, it's just fragile about them. A margin that thin would routinely lose to unrelated-but-more-similar-overall chunks once you're working with a real, larger corpus. We wrote that up honestly in the script instead of reshaping the questions until they matched the prediction.
+
+---

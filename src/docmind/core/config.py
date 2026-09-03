@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-large-en-v1.5"
     embedding_batch_size: int = 32
 
+    # Retrieval — cross-encoder for the final reranking pass over hybrid
+    # search's fused candidates. See docmind.retrieval.reranker for why
+    # this differs from the bi-encoder embedding model above.
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

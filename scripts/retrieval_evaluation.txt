@@ -1,0 +1,54 @@
+
+Ingesting Docs\DocMind.txt ...
+Ingested 17 chunks. Running 20 questions (10 exact, 10 semantic) at hit@5.
+
+======================================================================
+1 - Dense only
+======================================================================
+  exact     hit@5: 9/10 (90%)
+  semantic  hit@5: 9/10 (90%)
+  overall   hit@5: 18/20 (90%)
+
+======================================================================
+2 - Sparse only (BM25)
+======================================================================
+  exact     hit@5: 9/10 (90%)
+  semantic  hit@5: 8/10 (80%)
+  overall   hit@5: 17/20 (85%)
+
+======================================================================
+3 - Hybrid, no rerank
+======================================================================
+  exact     hit@5: 9/10 (90%)
+  semantic  hit@5: 10/10 (100%)
+  overall   hit@5: 19/20 (95%)
+
+======================================================================
+4 - Hybrid + rerank
+======================================================================
+  exact     hit@5: 10/10 (100%)
+  semantic  hit@5: 9/10 (90%)
+  overall   hit@5: 19/20 (95%)
+
+======================================================================
+Summary
+======================================================================
+  Method                       exact   semantic   overall
+  1 - Dense only                90%       90%      90%
+  2 - Sparse only (BM25)        90%       80%      85%
+  3 - Hybrid, no rerank         90%      100%      95%
+  4 - Hybrid + rerank          100%       90%      95%
+
+======================================================================
+Addendum: dense retrieval's real weak spot
+======================================================================
+Two chunks, identical except one digit sequence; query = the exact ID.
+  similarity to the CORRECT chunk:   0.5838
+  similarity to the WRONG chunk:     0.5536
+  margin: 0.0302 (compare to ~0.1-0.3+ for genuinely
+  different topics — this margin is real but fragile: in a large
+  corpus, many chunks more semantically similar overall (but
+  lacking this exact ID) could easily outscore the correct one.
+
+
+Cleaned up ingested test document.
