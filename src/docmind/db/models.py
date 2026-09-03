@@ -170,6 +170,12 @@ class Chunk(Base):
         nullable=True,
     )
 
+    # The document section this chunk belongs to (e.g. "Findings"), when
+    # the source format has real headings — only structural chunking on
+    # Word documents populates this today. NULL for fixed-size/semantic
+    # chunks and for structural chunks with no heading signal available.
+    section_heading: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

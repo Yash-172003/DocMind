@@ -33,6 +33,7 @@ from docmind.chunking.strategy import chunk_document
 from docmind.core.config import settings
 from docmind.core.storage import delete_upload, read_upload, save_upload
 from docmind.db.models import Chunk, Document, DocumentStatus
+from docmind.embedding.embedder import Embedder
 from docmind.extraction.exceptions import ExtractionError
 from docmind.extraction.router import extract
 
@@ -79,14 +80,26 @@ async def process_document(document_id: uuid.UUID, db: AsyncSession) -> None:
         document.metadata_ = metadata
 
         chunks = chunk_document(extraction, strategy=settings.chunking_strategy)
-        for index, chunk in enumerate(chunks):
+
+        # One batch call for every chunk in this document, not one call
+        # per chunk — see docmind.embedding.embedder and
+        # scripts/measure_embedding_batching.py for why that matters.
+        embedder = Embedder(settings.embedding_model)
+        vectors = embedder.embed_batch(
+            [chunk.text for chunk in chunks],
+            batch_size=settings.embedding_batch_size,
+        )
+
+        for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
             db.add(
                 Chunk(
                     document_id=document.id,
                     chunk_index=index,
                     text=chunk.text,
+                    embedding=vector,
                     token_count=chunk.token_count,
                     page_numbers=chunk.page_numbers or None,
+                    section_heading=chunk.section_heading,
                 )
             )
         document.chunk_count = len(chunks)

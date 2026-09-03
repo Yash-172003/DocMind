@@ -1,0 +1,34 @@
+
+Document: Docs\DocMind.txt chunked into 17 pieces
+
+======================================================================
+Production model: BAAI/bge-large-en-v1.5
+======================================================================
+Model load time: 13.8s (one-time, excluded above)
+
+This repo's chunks — 17 chunks, model=BAAI/bge-large-en-v1.5
+  One at a time:  14.15s total, 832.3ms/chunk
+  Batched:        14.58s total, 857.4ms/chunk
+  Speedup: 0.97x
+
+Multi-document scale — 200 chunks, model=BAAI/bge-large-en-v1.5
+  One at a time:  169.98s total, 849.9ms/chunk
+  Batched:        173.74s total, 868.7ms/chunk
+  Speedup: 0.98x
+
+======================================================================
+Reference model: sentence-transformers/all-MiniLM-L6-v2 (for comparison only)
+======================================================================
+Model load time: 8.6s (one-time, excluded above)
+
+Multi-document scale — 200 chunks, model=sentence-transformers/all-MiniLM-L6-v2
+  One at a time:  5.75s total, 28.8ms/chunk
+  Batched:        4.10s total, 20.5ms/chunk
+  Speedup: 1.40x
+
+======================================================================
+Conclusion
+======================================================================
+  BAAI/bge-large-en-v1.5: 0.97x at 17 chunks, 0.98x at 200
+  sentence-transformers/all-MiniLM-L6-v2: 1.40x at 200 chunks
+  The production model shows essentially no batching benefit on this CPU — each call is already compute-bound. The smaller reference model shows a real speedup because fixed per-call overhead is a much larger share of its (much shorter) runtime. See the module docstring for the full explanation.

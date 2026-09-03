@@ -17,6 +17,12 @@ services:
       - "8000:8000"
     volumes:
       - ./src:/app/src
+      # sentence-transformers caches downloaded model weights (~1.3GB
+      # for bge-large-en-v1.5) under ~/.cache/huggingface. Without this
+      # volume, that cache lives inside the container's writable layer
+      # and gets wiped — and the model re-downloaded — every time the
+      # container is recreated (e.g. `docker compose up --build`).
+      - huggingface_cache:/root/.cache/huggingface
     depends_on:
       db:
         condition: service_healthy
@@ -61,10 +67,21 @@ services:
   # Kept fully isolated from DocMind's own db/redis above — different
   # product, different lifecycle, and Langfuse's Redis needs a different
   # eviction policy (noeviction) than we'd want for app-level caching.
+  #
+  # Opt-in via profile, not started by default: Phase 1's embedding
+  # pipeline (PyTorch + sentence-transformers) is memory-heavy on its
+  # own, and running all 6 Langfuse containers (ClickHouse and MinIO
+  # especially) alongside it exhausted 15GB of RAM on a real dev
+  # machine — not a code bug, a genuine resource conflict discovered
+  # while testing Week 13-14. Langfuse also isn't actually wired into
+  # the app yet (that's Phase 3's instrumentation work), so there's
+  # nothing lost by leaving it off until then. Bring it up with:
+  #   docker compose --profile langfuse up -d
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     container_name: langfuse-worker
     restart: unless-stopped
+    profiles: ["langfuse"]
     depends_on: &langfuse-depends-on
       langfuse-db:
         condition: service_healthy
@@ -107,6 +124,7 @@ services:
     image: docker.langfuse.com/langfuse/langfuse:4
     container_name: langfuse-web
     restart: unless-stopped
+    profiles: ["langfuse"]
     depends_on: *langfuse-depends-on
     ports:
       - "3000:3000"
@@ -128,6 +146,7 @@ services:
     image: postgres:17
     container_name: langfuse-db
     restart: unless-stopped
+    profiles: ["langfuse"]
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}
@@ -144,6 +163,7 @@ services:
     image: redis:7-alpine
     container_name: langfuse-redis
     restart: unless-stopped
+    profiles: ["langfuse"]
     command: >
       --requirepass ${LANGFUSE_REDIS_PASSWORD}
       --maxmemory-policy noeviction
@@ -159,6 +179,7 @@ services:
     image: clickhouse/clickhouse-server:25.12
     container_name: langfuse-clickhouse
     restart: unless-stopped
+    profiles: ["langfuse"]
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -178,6 +199,7 @@ services:
     image: minio/minio
     container_name: langfuse-minio
     restart: unless-stopped
+    profiles: ["langfuse"]
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:
@@ -198,6 +220,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  huggingface_cache:
   langfuse_postgres_data:
   langfuse_redis_data:
   langfuse_clickhouse_data:

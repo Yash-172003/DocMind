@@ -11,7 +11,10 @@ far less reliable and easy to get wrong silently.
 
 Paragraphs/sections are grouped into chunks up to a token budget, same
 idea as semantic chunking, but the break points come from actual
-document structure instead of a similarity score.
+document structure instead of a similarity score. Each resulting
+chunk also carries the heading it started under (section_heading),
+so it can be stored alongside document ID/position/page number —
+useful later for citation grounding ("see the 'Findings' section").
 """
 
 from docmind.chunking.models import TextChunk
@@ -19,16 +22,27 @@ from docmind.chunking.tokens import estimate_token_count, tokens_to_chars
 from docmind.extraction.models import ExtractionResult, Heading
 
 
-def _sections_from_headings(text: str, headings: list[Heading]) -> list[str]:
-    """Split text at heading boundaries; each section starts at a heading."""
-    offsets = sorted(h.char_offset for h in headings)
-    sections: list[str] = []
-    if offsets[0] > 0:
-        sections.append(text[: offsets[0]])
-    for i, start in enumerate(offsets):
-        end = offsets[i + 1] if i + 1 < len(offsets) else len(text)
-        sections.append(text[start:end])
-    return [s.strip() for s in sections if s.strip()]
+def _sections_from_headings(
+    text: str, headings: list[Heading]
+) -> list[tuple[str | None, str]]:
+    """Split text at heading boundaries.
+
+    Returns (heading_text, section_body) pairs — heading_text is None
+    for any text appearing before the first heading (a preamble).
+    """
+    sorted_headings = sorted(headings, key=lambda h: h.char_offset)
+    sections: list[tuple[str | None, str]] = []
+    if sorted_headings[0].char_offset > 0:
+        sections.append((None, text[: sorted_headings[0].char_offset]))
+    for i, heading in enumerate(sorted_headings):
+        start = heading.char_offset
+        end = (
+            sorted_headings[i + 1].char_offset
+            if i + 1 < len(sorted_headings)
+            else len(text)
+        )
+        sections.append((heading.text, text[start:end]))
+    return [(h, s.strip()) for h, s in sections if s.strip()]
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -41,7 +55,9 @@ def _paragraphs(text: str) -> list[str]:
     return [p.strip() for p in normalized.split("\n\n") if p.strip()]
 
 
-def _flush(buffer_parts: list[str], page_number: int) -> TextChunk | None:
+def _flush(
+    buffer_parts: list[str], page_number: int, heading: str | None
+) -> TextChunk | None:
     if not buffer_parts:
         return None
     text = "\n\n".join(buffer_parts)
@@ -49,6 +65,7 @@ def _flush(buffer_parts: list[str], page_number: int) -> TextChunk | None:
         text=text,
         token_count=estimate_token_count(text),
         page_numbers=[page_number],
+        section_heading=heading,
     )
 
 
@@ -69,26 +86,31 @@ def chunk_structural(
     chunks: list[TextChunk] = []
 
     for page in extraction.pages:
-        units = (
+        units: list[tuple[str | None, str]] = (
             _sections_from_headings(page.text, extraction.headings)
             if use_headings
-            else _paragraphs(page.text)
+            else [(None, p) for p in _paragraphs(page.text)]
         )
 
         buffer_parts: list[str] = []
         buffer_len = 0
+        buffer_heading: str | None = None
 
-        for unit in units:
+        for heading, unit in units:
             if buffer_parts and buffer_len + len(unit) > budget_chars:
-                chunk = _flush(buffer_parts, page.page_number)
+                chunk = _flush(buffer_parts, page.page_number, buffer_heading)
                 if chunk is not None:
                     chunks.append(chunk)
                 buffer_parts = []
                 buffer_len = 0
+                buffer_heading = None
+
+            if not buffer_parts:
+                buffer_heading = heading
             buffer_parts.append(unit)
             buffer_len += len(unit) + 2
 
-        chunk = _flush(buffer_parts, page.page_number)
+        chunk = _flush(buffer_parts, page.page_number, buffer_heading)
         if chunk is not None:
             chunks.append(chunk)
 

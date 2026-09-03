@@ -17,6 +17,7 @@ dependencies = [
     "pymupdf>=1.26.4",
     "python-docx>=1.2.0",
     "python-multipart>=0.0.32",
+    "sentence-transformers>=6.0.1",
     "sqlalchemy>=2.0.51",
     "structlog>=26.1.0",
     "uvicorn>=0.49.0",
@@ -63,3 +64,14 @@ source = ["src/docmind"]
 # across that switch, and every route handler that awaits a DB call
 # appears to stop executing right after the first `await db.execute(...)`.
 concurrency = ["greenlet", "thread"]
+
+[tool.uv.sources]
+# PyPI's default torch wheel bundles CUDA (multi-GB). We run embedding
+# models on CPU at this scale — no GPU needed — so pull the much smaller
+# CPU-only build instead.
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

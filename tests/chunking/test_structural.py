@@ -35,6 +35,42 @@ def test_structural_uses_real_docx_headings_as_section_boundaries() -> None:
     assert chunks[1].text.startswith("Background")
 
 
+def test_structural_tags_chunks_with_their_section_heading() -> None:
+    extraction = extract_docx(_build_docx_with_headings())
+
+    chunks = chunk_structural(extraction, target_tokens=25)
+
+    assert len(chunks) == 2
+    assert chunks[0].section_heading == "Introduction"
+    assert chunks[1].section_heading == "Background"
+
+
+def test_structural_preamble_chunk_has_no_section_heading() -> None:
+    doc = DocxDocument()
+    doc.add_paragraph("This intro text appears before any heading.")
+    doc.add_paragraph("Findings", style="Heading 1")
+    doc.add_paragraph("The findings section body text.")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    extraction = extract_docx(buffer.getvalue())
+    chunks = chunk_structural(extraction, target_tokens=5)
+
+    assert chunks[0].section_heading is None
+    assert chunks[1].section_heading == "Findings"
+
+
+def test_structural_paragraph_fallback_has_no_section_heading() -> None:
+    text = "First paragraph here.\n\nSecond paragraph here."
+    extraction = ExtractionResult(
+        text=text, pages=[ExtractedPage(page_number=1, text=text)]
+    )
+
+    chunks = chunk_structural(extraction, target_tokens=1000)
+
+    assert chunks[0].section_heading is None
+
+
 def test_structural_keeps_preamble_before_first_heading() -> None:
     doc = DocxDocument()
     doc.add_paragraph("This intro text appears before any heading.")

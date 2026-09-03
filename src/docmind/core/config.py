@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # comparison, see scripts/compare_chunking.py.
     chunking_strategy: ChunkingStrategy = ChunkingStrategy.STRUCTURAL
 
+    # Embeddings — BAAI/bge-large-en-v1.5 is the production default: it
+    # runs locally (free, keeps documents private) and produces 1024-dim
+    # vectors matching the chunks.embedding column from Week 5-6. See
+    # docmind.embedding.embedder for why this model over alternatives.
+    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    embedding_batch_size: int = 32
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

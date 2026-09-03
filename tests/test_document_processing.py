@@ -9,8 +9,11 @@ import pymupdf
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from docmind.core.config import settings
+from docmind.db.base import async_session_factory
+from docmind.db.models import Chunk
 from docmind.main import app
 from tests.helpers import build_docx, build_pdf, build_xlsx
 
@@ -165,3 +168,60 @@ async def test_upload_produces_real_persisted_chunks(client: AsyncClient) -> Non
     assert all(c["token_count"] > 0 for c in chunks)
     # Every chunk should be real text pulled from the document, not empty.
     assert all(c["text"].strip() for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_upload_populates_real_embeddings(client: AsyncClient) -> None:
+    # Not exposed via the API (a 1024-float array isn't useful in JSON),
+    # so this checks the actual persisted column via a direct DB query —
+    # verifying the pipeline wiring, not just that Embedder works in
+    # isolation (already covered in tests/embedding/).
+    files = {"file": ("note.txt", b"A short note to embed.", "text/plain")}
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+
+    await client.get(f"/api/v1/documents/{doc_id}/content")  # wait for processing
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Chunk).where(Chunk.document_id == doc_id)
+        )
+        chunks = result.scalars().all()
+
+    assert len(chunks) >= 1
+    for chunk in chunks:
+        assert chunk.embedding is not None
+        # 1024 dims: BAAI/bge-large-en-v1.5's real output size, matching
+        # the Vector(1024) column set up back in Week 5-6.
+        assert len(chunk.embedding) == 1024
+
+
+@pytest.mark.asyncio
+async def test_upload_persists_section_heading_from_real_docx_headings(
+    client: AsyncClient,
+) -> None:
+    from io import BytesIO
+
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_paragraph("Findings", style="Heading 1")
+    doc.add_paragraph("Revenue grew steadily this quarter across all regions.")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    files = {
+        "file": (
+            "report.docx",
+            buffer.getvalue(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    }
+    upload_res = await client.post("/api/v1/documents/upload", files=files)
+    doc_id = upload_res.json()["id"]
+    await client.get(f"/api/v1/documents/{doc_id}/content")
+
+    chunks_res = await client.get(f"/api/v1/documents/{doc_id}/chunks")
+    chunks = chunks_res.json()
+
+    assert chunks[0]["section_heading"] == "Findings"
